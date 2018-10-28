@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/virtual-kubelet/virtual-kubelet/log"
+	"github.com/y0ssar1an/q"
 	"go.opencensus.io/trace"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -21,6 +22,7 @@ func (s *Server) registerNode(ctx context.Context) error {
 	if s.taint != nil {
 		taints = append(taints, *s.taint)
 	}
+	q.Q(s.provider)
 
 	node := &corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{

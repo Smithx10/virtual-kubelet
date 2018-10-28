@@ -34,7 +34,7 @@ type TritonProvider struct {
 	platformVersion string
 }
 
-// Capacity represents the provisioned capacity on a Fargate cluster.
+// Capacity represents the provisioned capacity on a Triton cluster.
 type capacity struct {
 	cpu     string
 	memory  string
@@ -73,10 +73,10 @@ func NewTritonProvider(
 
 func (p *TritonProvider) Capacity(ctx context.Context) corev1.ResourceList {
 	return corev1.ResourceList{
-		corev1.ResourceCPU:     resource.MustParse(p.capacity.cpu),
-		corev1.ResourceMemory:  resource.MustParse(p.capacity.memory),
-		corev1.ResourceStorage: resource.MustParse(p.capacity.storage),
-		corev1.ResourcePods:    resource.MustParse(p.capacity.pods),
+		corev1.ResourceCPU:     resource.MustParse("100"),
+		corev1.ResourceMemory:  resource.MustParse("100Gi"),
+		corev1.ResourceStorage: resource.MustParse("100Gi"),
+		corev1.ResourcePods:    resource.MustParse("100"),
 	}
 }
 
