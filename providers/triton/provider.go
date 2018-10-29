@@ -23,13 +23,9 @@ type TritonProvider struct {
 	daemonEndpointPort int32
 
 	// Triton resources.
-	region         string
-	subnets        []string
-	securityGroups []string
+	region string
 
 	// Triton resources.
-	//cluster                 *fargate.Cluster
-	clusterName     string
 	capacity        capacity
 	platformVersion string
 }
@@ -46,7 +42,7 @@ var (
 	errNotImplemented = fmt.Errorf("not implemented by Triton provider")
 )
 
-// NewTritonProvider creates a new Fargate provider.
+// NewTritonProvider creates a new Triton provider.
 func NewTritonProvider(
 	config string,
 	rm *manager.ResourceManager,
@@ -66,6 +62,13 @@ func NewTritonProvider(
 		daemonEndpointPort: daemonEndpointPort,
 	}
 
+	// Read the Triton provider configuration file.
+	err := p.loadConfigFile(config)
+	if err != nil {
+		err = fmt.Errorf("failed to load configuration file %s: %v", config, err)
+		return nil, err
+	}
+
 	log.Printf("Created Triton provider: %+v.", p)
 
 	return &p, nil
@@ -73,10 +76,10 @@ func NewTritonProvider(
 
 func (p *TritonProvider) Capacity(ctx context.Context) corev1.ResourceList {
 	return corev1.ResourceList{
-		corev1.ResourceCPU:     resource.MustParse("100"),
-		corev1.ResourceMemory:  resource.MustParse("100Gi"),
-		corev1.ResourceStorage: resource.MustParse("100Gi"),
-		corev1.ResourcePods:    resource.MustParse("100"),
+		corev1.ResourceCPU:     resource.MustParse(p.capacity.cpu),
+		corev1.ResourceMemory:  resource.MustParse(p.capacity.memory),
+		corev1.ResourceStorage: resource.MustParse(p.capacity.storage),
+		corev1.ResourcePods:    resource.MustParse(p.capacity.pods),
 	}
 }
 
@@ -154,14 +157,23 @@ func (p *TritonProvider) NodeConditions(ctx context.Context) []corev1.NodeCondit
 func (p *TritonProvider) NodeAddresses(ctx context.Context) []corev1.NodeAddress {
 	log.Println("Received NodeAddresses request.")
 
-	return nil
+	return []corev1.NodeAddress{
+		{
+			Type:    corev1.NodeInternalIP,
+			Address: p.internalIP,
+		},
+	}
 }
 
 // NodeDaemonEndpoints returns NodeDaemonEndpoints for the node status within Kubernetes.
 func (p *TritonProvider) NodeDaemonEndpoints(ctx context.Context) *corev1.NodeDaemonEndpoints {
 	log.Println("Received NodeDaemonEndpoints request.")
 
-	return nil
+	return &corev1.NodeDaemonEndpoints{
+		KubeletEndpoint: corev1.DaemonEndpoint{
+			Port: p.daemonEndpointPort,
+		},
+	}
 }
 
 // OperatingSystem returns the operating system the provider is for.
