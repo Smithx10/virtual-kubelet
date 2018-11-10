@@ -8,9 +8,9 @@ import (
 )
 
 func init() {
-	register("triton", iniTriton)
+	register("triton", initTriton)
 }
 
-func iniTriton(cfg InitConfig) (providers.Provider, error) {
+func initTriton(cfg InitConfig) (providers.Provider, error) {
 	return triton.NewTritonProvider(cfg.ConfigPath, cfg.ResourceManager, cfg.NodeName, cfg.OperatingSystem, cfg.InternalIP, cfg.DaemonPort)
 }

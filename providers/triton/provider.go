@@ -2,14 +2,18 @@ package triton
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"log"
+	"os"
 	"time"
 
 	"github.com/virtual-kubelet/virtual-kubelet/manager"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/remotecommand"
 )
@@ -26,8 +30,9 @@ type TritonProvider struct {
 	region string
 
 	// Triton resources.
-	capacity        capacity
-	platformVersion string
+	capacity           capacity
+	platformVersion    string
+	lastTransitionTime time.Time
 }
 
 // Capacity represents the provisioned capacity on a Triton cluster.
@@ -69,6 +74,10 @@ func NewTritonProvider(
 		return nil, err
 	}
 
+	log.Printf("Loaded provider configuration file %s.", config)
+
+	// Create Connection to the Specified Triton Datacenter
+
 	log.Printf("Created Triton provider: %+v.", p)
 
 	return &p, nil
@@ -83,7 +92,7 @@ func (p *TritonProvider) Capacity(ctx context.Context) corev1.ResourceList {
 	}
 }
 
-// CreatePod takes a Kubernetes Pod and deploys it within the Fargate provider.
+// CreatePod takes a Kubernetes Pod and deploys it within the Triton provider.
 func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	log.Printf("Received CreatePod request for %+v.\n", pod)
 
@@ -141,7 +150,21 @@ func (p *TritonProvider) GetPodStatus(ctx context.Context, namespace, name strin
 func (p *TritonProvider) GetPods(ctx context.Context) ([]*corev1.Pod, error) {
 	log.Println("Received GetPods request.")
 
-	return nil, nil
+	var result []*corev1.Pod
+	var spec *corev1.Pod
+
+	f, err := os.Open("/Users/bruce.smith/go/src/github.com/virtual-kubelet/virtual-kubelet/providers/triton/test.json")
+	defer f.Close()
+	if err != nil {
+		return nil, err
+	}
+
+	byteValue, _ := ioutil.ReadAll(f)
+	json.Unmarshal(byteValue, &spec)
+
+	result = append(result, spec)
+
+	return result, nil
 }
 
 // NodeConditions returns a list of conditions (Ready, OutOfDisk, etc), which is polled
@@ -149,8 +172,62 @@ func (p *TritonProvider) GetPods(ctx context.Context) ([]*corev1.Pod, error) {
 func (p *TritonProvider) NodeConditions(ctx context.Context) []corev1.NodeCondition {
 	log.Println("Received NodeConditions request.")
 
+	lastHeartbeatTime := metav1.Now()
+	lastTransitionTime := metav1.NewTime(p.lastTransitionTime)
+	lastTransitionReason := "Triton is ready"
+	lastTransitionMessage := "ok"
+
 	// Return static thumbs-up values for all conditions.
-	return nil
+	return []corev1.NodeCondition{
+		{
+			Type:               corev1.NodeReady,
+			Status:             corev1.ConditionTrue,
+			LastHeartbeatTime:  lastHeartbeatTime,
+			LastTransitionTime: lastTransitionTime,
+			Reason:             lastTransitionReason,
+			Message:            lastTransitionMessage,
+		},
+		{
+			Type:               corev1.NodeOutOfDisk,
+			Status:             corev1.ConditionFalse,
+			LastHeartbeatTime:  lastHeartbeatTime,
+			LastTransitionTime: lastTransitionTime,
+			Reason:             lastTransitionReason,
+			Message:            lastTransitionMessage,
+		},
+		{
+			Type:               corev1.NodeMemoryPressure,
+			Status:             corev1.ConditionFalse,
+			LastHeartbeatTime:  lastHeartbeatTime,
+			LastTransitionTime: lastTransitionTime,
+			Reason:             lastTransitionReason,
+			Message:            lastTransitionMessage,
+		},
+		{
+			Type:               corev1.NodeDiskPressure,
+			Status:             corev1.ConditionFalse,
+			LastHeartbeatTime:  lastHeartbeatTime,
+			LastTransitionTime: lastTransitionTime,
+			Reason:             lastTransitionReason,
+			Message:            lastTransitionMessage,
+		},
+		{
+			Type:               corev1.NodeNetworkUnavailable,
+			Status:             corev1.ConditionFalse,
+			LastHeartbeatTime:  lastHeartbeatTime,
+			LastTransitionTime: lastTransitionTime,
+			Reason:             lastTransitionReason,
+			Message:            lastTransitionMessage,
+		},
+		{
+			Type:               "KubeletConfigOk",
+			Status:             corev1.ConditionTrue,
+			LastHeartbeatTime:  lastHeartbeatTime,
+			LastTransitionTime: lastTransitionTime,
+			Reason:             lastTransitionReason,
+			Message:            lastTransitionMessage,
+		},
+	}
 }
 
 // NodeAddresses returns a list of addresses for the node status within Kubernetes.
