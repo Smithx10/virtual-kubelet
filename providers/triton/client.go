@@ -1,93 +1,78 @@
 package triton
 
 import (
-	"context"
-	"encoding/pem"
-	"fmt"
-	"io/ioutil"
-	"log"
-	"os"
+	"sync"
+
+	"github.com/hashicorp/errwrap"
 
 	triton "github.com/joyent/triton-go"
-	"github.com/joyent/triton-go/authentication"
+	"github.com/joyent/triton-go/account"
 	"github.com/joyent/triton-go/compute"
+	"github.com/joyent/triton-go/identity"
+	"github.com/joyent/triton-go/network"
+	"github.com/joyent/triton-go/services"
 )
 
-func main() {
-	keyID := os.Getenv("SDC_KEY_ID")
-	accountName := os.Getenv("SDC_ACCOUNT")
-	keyMaterial := os.Getenv("SDC_KEY_MATERIAL")
-	userName := os.Getenv("SDC_USER")
+// Client represents all internally accessible Triton APIs utilized by this
+// provider and the configuration necessary to connect to them.
+type Client struct {
+	config                *triton.ClientConfig
+	insecureSkipTLSVerify bool
+	affinityLock          *sync.RWMutex
+}
 
-	var signer authentication.Signer
-	var err error
-
-	if keyMaterial == "" {
-		input := authentication.SSHAgentSignerInput{
-			KeyID:       keyID,
-			AccountName: accountName,
-			Username:    userName,
-		}
-		signer, err = authentication.NewSSHAgentSigner(input)
-		if err != nil {
-			log.Fatalf("Error Creating SSH Agent Signer: {{err}}", err)
-		}
-	} else {
-		var keyBytes []byte
-		if _, err = os.Stat(keyMaterial); err == nil {
-			keyBytes, err = ioutil.ReadFile(keyMaterial)
-			if err != nil {
-				log.Fatalf("Error reading key material from %s: %s",
-					keyMaterial, err)
-			}
-			block, _ := pem.Decode(keyBytes)
-			if block == nil {
-				log.Fatalf(
-					"Failed to read key material '%s': no key found", keyMaterial)
-			}
-
-			if block.Headers["Proc-Type"] == "4,ENCRYPTED" {
-				log.Fatalf(
-					"Failed to read key '%s': password protected keys are\n"+
-						"not currently supported. Please decrypt the key prior to use.", keyMaterial)
-			}
-
-		} else {
-			keyBytes = []byte(keyMaterial)
-		}
-
-		input := authentication.PrivateKeySignerInput{
-			KeyID:              keyID,
-			PrivateKeyMaterial: keyBytes,
-			AccountName:        accountName,
-			Username:           userName,
-		}
-		signer, err = authentication.NewPrivateKeySigner(input)
-		if err != nil {
-			log.Fatalf("Error Creating SSH Private Key Signer: {{err}}", err)
-		}
-	}
-
-	config := &triton.ClientConfig{
-		TritonURL:   os.Getenv("SDC_URL"),
-		AccountName: accountName,
-		Username:    userName,
-		Signers:     []authentication.Signer{signer},
-	}
-
-	c, err := compute.NewClient(config)
+func (c Client) Account() (*account.AccountClient, error) {
+	accountClient, err := account.NewClient(c.config)
 	if err != nil {
-		log.Fatalf("compute.NewClient: %s", err)
+		return nil, errwrap.Wrapf("Error Creating Triton Account Client: {{err}}", err)
 	}
 
-	listInput := &compute.ListInstancesInput{}
-	instances, err := c.Instances().List(context.Background(), listInput)
+	if c.insecureSkipTLSVerify {
+		accountClient.Client.InsecureSkipTLSVerify()
+	}
+	return accountClient, nil
+}
+
+func (c Client) Compute() (*compute.ComputeClient, error) {
+	computeClient, err := compute.NewClient(c.config)
 	if err != nil {
-		log.Fatalf("compute.Instances.List: %v", err)
+		return nil, errwrap.Wrapf("Error Creating Triton Compute Client: {{err}}", err)
 	}
-	numInstances := 0
-	for _, instance := range instances {
-		numInstances++
-		fmt.Println(fmt.Sprintf("-- Instance: %v", instance.Name))
+	if c.insecureSkipTLSVerify {
+		computeClient.Client.InsecureSkipTLSVerify()
 	}
+	return computeClient, nil
+}
+
+func (c Client) Identity() (*identity.IdentityClient, error) {
+	identityClient, err := identity.NewClient(c.config)
+	if err != nil {
+		return nil, errwrap.Wrapf("Error Creating Triton Identity Client: {{err}}", err)
+	}
+	if c.insecureSkipTLSVerify {
+		identityClient.Client.InsecureSkipTLSVerify()
+	}
+	return identityClient, nil
+}
+
+func (c Client) Network() (*network.NetworkClient, error) {
+	networkClient, err := network.NewClient(c.config)
+	if err != nil {
+		return nil, errwrap.Wrapf("Error Creating Triton Network Client: {{err}}", err)
+	}
+	if c.insecureSkipTLSVerify {
+		networkClient.Client.InsecureSkipTLSVerify()
+	}
+	return networkClient, nil
+}
+
+func (c Client) Services() (*services.ServiceGroupClient, error) {
+	servicesClient, err := services.NewClient(c.config)
+	if err != nil {
+		return nil, errwrap.Wrapf("Error Creating Triton Services Client: {{err}}", err)
+	}
+	if c.insecureSkipTLSVerify {
+		servicesClient.Client.InsecureSkipTLSVerify()
+	}
+	return servicesClient, nil
 }

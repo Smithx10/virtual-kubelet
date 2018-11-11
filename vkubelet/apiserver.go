@@ -10,7 +10,6 @@ import (
 	"github.com/virtual-kubelet/virtual-kubelet/log"
 	"github.com/virtual-kubelet/virtual-kubelet/providers"
 	"github.com/virtual-kubelet/virtual-kubelet/vkubelet/api"
-	"github.com/y0ssar1an/q"
 	"go.opencensus.io/plugin/ochttp"
 	"go.opencensus.io/plugin/ochttp/propagation/b3"
 )
@@ -50,7 +49,6 @@ func MetricsSummaryHandler(p providers.Provider) http.Handler {
 
 // KubeletServerStart starts the virtual kubelet HTTP server.
 func KubeletServerStart(p providers.Provider, l net.Listener, cert, key string) {
-	q.Q(l, InstrumentHandler(PodHandler(p)), cert, key)
 	if err := http.ServeTLS(l, InstrumentHandler(PodHandler(p)), cert, key); err != nil {
 		log.G(context.TODO()).WithError(err).Error("error setting up http server")
 	}

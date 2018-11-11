@@ -3,13 +3,17 @@ package triton
 import (
 	"context"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"io/ioutil"
 	"log"
 	"os"
+	"sync"
 	"time"
 
+	triton "github.com/joyent/triton-go"
+	"github.com/joyent/triton-go/authentication"
 	"github.com/virtual-kubelet/virtual-kubelet/manager"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -28,6 +32,8 @@ type TritonProvider struct {
 
 	// Triton resources.
 	region string
+
+	client *Client
 
 	// Triton resources.
 	capacity           capacity
@@ -49,7 +55,7 @@ var (
 
 // NewTritonProvider creates a new Triton provider.
 func NewTritonProvider(
-	config string,
+	vkubeConfig string,
 	rm *manager.ResourceManager,
 	nodeName string,
 	operatingSystem string,
@@ -59,24 +65,93 @@ func NewTritonProvider(
 	// Create the Triton provider.
 	log.Println("Creating Triton provider.")
 
+	keyID := os.Getenv("TRITON_KEY_ID")
+	accountName := os.Getenv("TRITON_ACCOUNT")
+	keyMaterial := os.Getenv("TRITON_KEY_MATERIAL")
+	userName := os.Getenv("TRITON_USER")
+	insecure := false
+	if os.Getenv("SDC_INSECURE") != "" {
+		insecure = true
+	}
+
+	var signer authentication.Signer
+	var err error
+
+	if keyMaterial == "" {
+		input := authentication.SSHAgentSignerInput{
+			KeyID:       keyID,
+			AccountName: accountName,
+			Username:    userName,
+		}
+		signer, err = authentication.NewSSHAgentSigner(input)
+		if err != nil {
+			log.Fatalf("Error Creating SSH Agent Signer: {{err}}", err)
+		}
+	} else {
+		var keyBytes []byte
+		if _, err = os.Stat(keyMaterial); err == nil {
+			keyBytes, err = ioutil.ReadFile(keyMaterial)
+			if err != nil {
+				log.Fatalf("Error reading key material from %s: %s",
+					keyMaterial, err)
+			}
+			block, _ := pem.Decode(keyBytes)
+			if block == nil {
+				log.Fatalf(
+					"Failed to read key material '%s': no key found", keyMaterial)
+			}
+
+			if block.Headers["Proc-Type"] == "4,ENCRYPTED" {
+				log.Fatalf(
+					"Failed to read key '%s': password protected keys are\n"+
+						"not currently supported. Please decrypt the key prior to use.", keyMaterial)
+			}
+
+		} else {
+			keyBytes = []byte(keyMaterial)
+		}
+
+		input := authentication.PrivateKeySignerInput{
+			KeyID:              keyID,
+			PrivateKeyMaterial: keyBytes,
+			AccountName:        accountName,
+			Username:           userName,
+		}
+		signer, err = authentication.NewPrivateKeySigner(input)
+		if err != nil {
+			log.Fatalf("Error Creating SSH Private Key Signer: {{err}}", err)
+		}
+	}
+
+	tritonConfig := &triton.ClientConfig{
+		TritonURL:   os.Getenv("SDC_URL"),
+		AccountName: accountName,
+		Username:    userName,
+		Signers:     []authentication.Signer{signer},
+	}
+
 	p := TritonProvider{
 		resourceManager:    rm,
 		nodeName:           nodeName,
 		operatingSystem:    operatingSystem,
 		internalIP:         internalIP,
 		daemonEndpointPort: daemonEndpointPort,
+		client: &Client{
+			config:                tritonConfig,
+			insecureSkipTLSVerify: insecure,
+			affinityLock:          &sync.RWMutex{},
+		},
 	}
-
 	// Read the Triton provider configuration file.
-	err := p.loadConfigFile(config)
-	if err != nil {
-		err = fmt.Errorf("failed to load configuration file %s: %v", config, err)
-		return nil, err
-	}
+	//err := p.loadConfigFile(vkubeConfig)
+	//if err != nil {
+	//err = fmt.Errorf("failed to load vkubeConfiguration file %s: %v", vkubeConfig, err)
+	//return nil, err
+	//}
 
-	log.Printf("Loaded provider configuration file %s.", config)
+	//log.Printf("Loaded provider vkubeConfiguration file %s.", vkubeConfig)
 
-	// Create Connection to the Specified Triton Datacenter
+	//// Create Connection to the Specified Triton Datacenter
 
 	log.Printf("Created Triton provider: %+v.", p)
 
