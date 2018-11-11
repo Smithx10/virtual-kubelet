@@ -13,6 +13,7 @@ import (
 
 	triton "github.com/joyent/triton-go"
 	"github.com/joyent/triton-go/authentication"
+	"github.com/joyent/triton-go/compute"
 	"github.com/virtual-kubelet/virtual-kubelet/manager"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -223,9 +224,6 @@ func (p *TritonProvider) GetPodStatus(ctx context.Context, namespace, name strin
 func (p *TritonProvider) GetPods(ctx context.Context) ([]*corev1.Pod, error) {
 	log.Println("Received GetPods request.")
 
-	//var result []*corev1.Pod
-	//var spec *corev1.Pod
-
 	return nil, nil
 }
 
@@ -320,4 +318,80 @@ func (p *TritonProvider) OperatingSystem() string {
 	log.Println("Received OperatingSystem request.")
 
 	return p.operatingSystem
+}
+
+func instanceToPod(instance *compute.Instance) (*corev1.Pod, error) {
+	var podCreationTimestamp metav1.Time
+	containers := make([]v1.Container, 0, len(cg.Containers))
+	p := v1.Pod{
+		TypeMeta: metav1.TypeMeta{
+			Kind:       "Pod",
+			APIVersion: "v1",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "PodName",
+			Namespace:         "Namespace",
+			ClusterName:       "ClusterName",
+			UID:               types.UID("UID"),
+			CreationTimestamp: podCreationTimestamp,
+		},
+		Spec: v1.PodSpec{
+			NodeName:   "NodeName",
+			Volumes:    []v1.Volume{},
+			Containers: containers,
+		},
+		Status: v1.PodStatus{
+			Phase:             aciStateToPodPhase(aciState),
+			Conditions:        aciStateToPodConditions(aciState, podCreationTimestamp),
+			Message:           "",
+			Reason:            "",
+			HostIP:            "",
+			PodIP:             ip,
+			StartTime:         &containerStartTime,
+			ContainerStatuses: containerStatuses,
+		},
+	}
+
+	return &p, nil
+}
+
+// TODO  Conver Triton Instance State to Container State for corev1.ContainerStatus which is used by corev1.Container
+func instanceStateToContainerState(instance compute.Instance) corev1.ContainerState {
+	startTime := metav1.NewTime(time.Time(instance.Created))
+
+	// Handle the case where the container is running.
+	if instance.State == "Running" {
+		return corev1.ContainerState{
+			Running: &corev1.ContainerStateRunning{
+				StartedAt: startTime,
+			},
+		}
+	}
+
+	// Handle the case where the container failed.
+	if instance.State == "Failed" {
+		return corev1.ContainerState{
+			Terminated: &corev1.ContainerStateTerminated{
+				ExitCode:   1, // Placeholder,  Investigate further
+				Reason:     instance.State,
+				Message:    "failed", // Place Holder,  Investigate further.
+				StartedAt:  startTime,
+				FinishedAt: metav1.NewTime(time.Time(cs.FinishTime)),
+			},
+		}
+	}
+
+	state := cs.State
+	if state == "Provisioning" {
+		state = "Creating"
+	}
+
+	// Handle the case where the container is pending.
+	// Which should be all other instance states.
+	return corev1.ContainerState{
+		Waiting: &corev1.ContainerStateWaiting{
+			Reason:  state,
+			Message: instance.State,
+		},
+	}
 }
