@@ -2,7 +2,6 @@ package triton
 
 import (
 	"context"
-	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"io"
@@ -224,21 +223,10 @@ func (p *TritonProvider) GetPodStatus(ctx context.Context, namespace, name strin
 func (p *TritonProvider) GetPods(ctx context.Context) ([]*corev1.Pod, error) {
 	log.Println("Received GetPods request.")
 
-	var result []*corev1.Pod
-	var spec *corev1.Pod
+	//var result []*corev1.Pod
+	//var spec *corev1.Pod
 
-	f, err := os.Open("/Users/bruce.smith/go/src/github.com/virtual-kubelet/virtual-kubelet/providers/triton/test.json")
-	defer f.Close()
-	if err != nil {
-		return nil, err
-	}
-
-	byteValue, _ := ioutil.ReadAll(f)
-	json.Unmarshal(byteValue, &spec)
-
-	result = append(result, spec)
-
-	return result, nil
+	return nil, nil
 }
 
 // NodeConditions returns a list of conditions (Ready, OutOfDisk, etc), which is polled
