@@ -55,7 +55,7 @@ var (
 
 // NewTritonProvider creates a new Triton provider.
 func NewTritonProvider(
-	vkubeConfig string,
+	config string,
 	rm *manager.ResourceManager,
 	nodeName string,
 	operatingSystem string,
@@ -65,10 +65,10 @@ func NewTritonProvider(
 	// Create the Triton provider.
 	log.Println("Creating Triton provider.")
 
-	keyID := os.Getenv("TRITON_KEY_ID")
-	accountName := os.Getenv("TRITON_ACCOUNT")
-	keyMaterial := os.Getenv("TRITON_KEY_MATERIAL")
-	userName := os.Getenv("TRITON_USER")
+	keyID := os.Getenv("SDC_KEY_ID")
+	accountName := os.Getenv("SDC_ACCOUNT")
+	keyMaterial := os.Getenv("SDC_KEY_MATERIAL")
+	userName := os.Getenv("SDC_USER")
 	insecure := false
 	if os.Getenv("SDC_INSECURE") != "" {
 		insecure = true
@@ -142,16 +142,15 @@ func NewTritonProvider(
 			affinityLock:          &sync.RWMutex{},
 		},
 	}
-	// Read the Triton provider configuration file.
-	//err := p.loadConfigFile(vkubeConfig)
-	//if err != nil {
-	//err = fmt.Errorf("failed to load vkubeConfiguration file %s: %v", vkubeConfig, err)
-	//return nil, err
-	//}
 
-	//log.Printf("Loaded provider vkubeConfiguration file %s.", vkubeConfig)
+	//Read the Triton provider configuration file.
+	configErr := p.loadConfigFile(config)
+	if configErr != nil {
+		err = fmt.Errorf("failed to load configuration file %s: %v", config, err)
+		return nil, err
+	}
 
-	//// Create Connection to the Specified Triton Datacenter
+	log.Printf("Loaded provider Configuration file %s.", config)
 
 	log.Printf("Created Triton provider: %+v.", p)
 
