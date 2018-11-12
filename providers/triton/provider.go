@@ -174,6 +174,12 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 		Image:   pod.Spec.Containers[0].Image,
 		Package: "sample-2G",
 		Name:    pod.Name,
+		Tags: map[string]string{
+			"PodName":     pod.Name,
+			"ClusterName": pod.ClusterName,
+			"NodeName":    pod.Spec.NodeName,
+			"UID":         string(pod.UID),
+		},
 	})
 	if err != nil {
 		return err
@@ -192,8 +198,14 @@ func (p *TritonProvider) UpdatePod(ctx context.Context, pod *corev1.Pod) error {
 // DeletePod takes a Kubernetes Pod and deletes it from the provider.
 func (p *TritonProvider) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 	log.Printf("Received DeletePod request for %s/%s.\n", pod.Namespace, pod.Name)
+	tags := make(map[string]interface{})
+	tags["NodeName"] = pod.Spec.NodeName
+
 	c, _ := p.client.Compute()
-	is, _ := c.Instances().List(ctx, &compute.ListInstancesInput{Name: "triton-ubuntu-test"})
+	is, _ := c.Instances().List(ctx, &compute.ListInstancesInput{
+		Name: "triton-ubuntu-test",
+		Tags: tags,
+	})
 
 	for _, i := range is {
 		return c.Instances().Delete(ctx, &compute.DeleteInstanceInput{ID: i.ID})
@@ -251,8 +263,10 @@ func (p *TritonProvider) GetPods(ctx context.Context) ([]*corev1.Pod, error) {
 
 	pods := make([]*corev1.Pod, 0, len(is))
 	for _, i := range is {
-		p, _ := instanceToPod(i)
-		pods = append(pods, p)
+		if i.Tags["NodeName"] != nil {
+			p, _ := instanceToPod(i)
+			pods = append(pods, p)
+		}
 	}
 
 	return pods, nil
