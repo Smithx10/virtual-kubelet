@@ -169,6 +169,16 @@ func (p *TritonProvider) Capacity(ctx context.Context) corev1.ResourceList {
 // CreatePod takes a Kubernetes Pod and deploys it within the Triton provider.
 func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	log.Printf("Received CreatePod request for %+v.\n", pod)
+	c, err := p.client.Compute()
+	i, err := c.Instances().Create(ctx, &compute.CreateInstanceInput{
+		Image:   pod.Spec.Containers[0].Image,
+		Package: "sample-2G",
+		Name:    pod.Name,
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Println("Created: " + i.Name)
 
 	return nil
 }
@@ -182,13 +192,25 @@ func (p *TritonProvider) UpdatePod(ctx context.Context, pod *corev1.Pod) error {
 // DeletePod takes a Kubernetes Pod and deletes it from the provider.
 func (p *TritonProvider) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 	log.Printf("Received DeletePod request for %s/%s.\n", pod.Namespace, pod.Name)
+	c, _ := p.client.Compute()
+	is, _ := c.Instances().List(ctx, &compute.ListInstancesInput{Name: "triton-ubuntu-test"})
 
+	for _, i := range is {
+		return c.Instances().Delete(ctx, &compute.DeleteInstanceInput{ID: i.ID})
+	}
 	return nil
 }
 
 // GetPod retrieves a pod by name from the provider (can be cached).
 func (p *TritonProvider) GetPod(ctx context.Context, namespace, name string) (*corev1.Pod, error) {
 	log.Printf("Received GetPod request for %s/%s.\n", namespace, name)
+
+	c, _ := p.client.Compute()
+	is, _ := c.Instances().List(ctx, &compute.ListInstancesInput{Name: name})
+
+	for _, i := range is {
+		return instanceToPod(i)
+	}
 
 	return nil, nil
 }
