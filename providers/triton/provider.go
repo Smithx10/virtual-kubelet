@@ -225,12 +225,15 @@ func (p *TritonProvider) GetPods(ctx context.Context) ([]*corev1.Pod, error) {
 	log.Println("Received GetPods request.")
 
 	c, _ := p.client.Compute()
-	instances, _ := c.Instances().List(ctx, &compute.ListInstancesInput{})
-	for _, instance := range instances {
-		fmt.Println(instance.Name)
+	is, _ := c.Instances().List(ctx, &compute.ListInstancesInput{})
+
+	pods := make([]*corev1.Pod, 0, len(is))
+	for _, i := range is {
+		p, _ := instanceToPod(i)
+		pods = append(pods, p)
 	}
 
-	return nil, nil
+	return pods, nil
 }
 
 // NodeConditions returns a list of conditions (Ready, OutOfDisk, etc), which is polled
@@ -324,4 +327,153 @@ func (p *TritonProvider) OperatingSystem() string {
 	log.Println("Received OperatingSystem request.")
 
 	return p.operatingSystem
+}
+
+func instanceToPod(i *compute.Instance) (*corev1.Pod, error) {
+
+	// Take Care of time
+	var podCreationTimestamp metav1.Time
+	podCreationTimestamp = metav1.NewTime(time.Now())
+	containerStartTime := metav1.NewTime(time.Now())
+
+	/*
+	   On Triton we do not share Namespaces, so init Pod Groups or Patterns which encourage this aren't implement.   This implementation Maps 1 instance to 1 pod.
+	*/
+	container := corev1.Container{
+		//Name string `json:"name" protobuf:"bytes,1,opt,name=name"`
+		Name: i.Name,
+		//Image string `json:"image,omitempty" protobuf:"bytes,2,opt,name=image"`
+		Image: i.Image,
+		//Command []string `json:"command,omitempty" protobuf:"bytes,3,rep,name=command"`
+		//Args []string `json:"args,omitempty" protobuf:"bytes,4,rep,name=args"`
+		//WorkingDir string `json:"workingDir,omitempty" protobuf:"bytes,5,opt,name=workingDir"`
+		//Ports []ContainerPort `json:"ports,omitempty" patchStrategy:"merge" patchMergeKey:"containerPort" protobuf:"bytes,6,rep,name=ports"`
+		//EnvFrom []EnvFromSource `json:"envFrom,omitempty" protobuf:"bytes,19,rep,name=envFrom"`
+		//Env []EnvVar `json:"env,omitempty" patchStrategy:"merge" patchMergeKey:"name" protobuf:"bytes,7,rep,name=env"`
+		//Resources ResourceRequirements `json:"resources,omitempty" protobuf:"bytes,8,opt,name=resources"`
+		//VolumeMounts []VolumeMount `json:"volumeMounts,omitempty" patchStrategy:"merge" patchMergeKey:"mountPath" protobuf:"bytes,9,rep,name=volumeMounts"`
+		//VolumeDevices []VolumeDevice `json:"volumeDevices,omitempty" patchStrategy:"merge" patchMergeKey:"devicePath" protobuf:"bytes,21,rep,name=volumeDevices"`
+		//LivenessProbe *Probe `json:"livenessProbe,omitempty" protobuf:"bytes,10,opt,name=livenessProbe"`
+		//ReadinessProbe *Probe `json:"readinessProbe,omitempty" protobuf:"bytes,11,opt,name=readinessProbe"`
+		//Lifecycle *Lifecycle `json:"lifecycle,omitempty" protobuf:"bytes,12,opt,name=lifecycle"`
+		//TerminationMessagePath string `json:"terminationMessagePath,omitempty" protobuf:"bytes,13,opt,name=terminationMessagePath"`
+		//TerminationMessagePolicy TerminationMessagePolicy `json:"terminationMessagePolicy,omitempty" protobuf:"bytes,20,opt,name=terminationMessagePolicy,casttype=TerminationMessagePolicy"`
+		//ImagePullPolicy PullPolicy `json:"imagePullPolicy,omitempty" protobuf:"bytes,14,opt,name=imagePullPolicy,casttype=PullPolicy"`
+		//SecurityContext *SecurityContext `json:"securityContext,omitempty" protobuf:"bytes,15,opt,name=securityContext"`
+		//Stdin bool `json:"stdin,omitempty" protobuf:"varint,16,opt,name=stdin"`
+		//StdinOnce bool `json:"stdinOnce,omitempty" protobuf:"varint,17,opt,name=stdinOnce"`
+		//TTY bool `json:"tty,omitempty" protobuf:"varint,18,opt,name=tty"`
+	}
+
+	containerStatus := corev1.ContainerStatus{
+		//Name string `json:"name" protobuf:"bytes,1,opt,name=name"`
+		Name: i.Name,
+		//State ContainerState `json:"state,omitempty" protobuf:"bytes,2,opt,name=state"`
+		State: instanceStateToContainerState(i),
+		//LastTerminationState ContainerState `json:"lastState,omitempty" protobuf:"bytes,3,opt,name=lastState"`
+		//Ready bool `json:"ready" protobuf:"varint,4,opt,name=ready"`
+		//RestartCount int32 `json:"restartCount" protobuf:"varint,5,opt,name=restartCount"`
+		//Image string `json:"image" protobuf:"bytes,6,opt,name=image"`
+		//ImageID string `json:"imageID" protobuf:"bytes,7,opt,name=imageID"`
+		//ContainerID string `json:"containerID,omitempty" protobuf:"bytes,8,opt,name=containerID"`
+	}
+
+	containers := make([]corev1.Container, 0, 1)
+	containerStatuses := make([]corev1.ContainerStatus, 0, 1)
+
+	containers = append(containers, container)
+	containerStatuses = append(containerStatuses, containerStatus)
+
+	p := corev1.Pod{
+		TypeMeta: metav1.TypeMeta{
+			Kind:       "Pod",
+			APIVersion: "v1",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              i.Name,
+			Namespace:         "default",
+			ClusterName:       "cluster",
+			UID:               "ObjectMeta.metav1.ObjectMeta.UID",
+			CreationTimestamp: podCreationTimestamp,
+		},
+		Spec: corev1.PodSpec{
+			NodeName:   "NodeName",
+			Volumes:    []corev1.Volume{},
+			Containers: containers,
+		},
+		Status: corev1.PodStatus{
+			Phase:             "Phase",
+			Conditions:        instanceStateToPodConditions(i.State, podCreationTimestamp),
+			Message:           "",
+			Reason:            "",
+			HostIP:            "",
+			PodIP:             i.PrimaryIP,
+			StartTime:         &containerStartTime,
+			ContainerStatuses: containerStatuses,
+		},
+	}
+
+	return &p, nil
+}
+
+func instanceStateToPodConditions(state string, transitiontime metav1.Time) []corev1.PodCondition {
+	switch state {
+	case "Running":
+		return []corev1.PodCondition{
+			corev1.PodCondition{
+				Type:               corev1.PodReady,
+				Status:             corev1.ConditionTrue,
+				LastTransitionTime: transitiontime,
+			}, corev1.PodCondition{
+				Type:               corev1.PodInitialized,
+				Status:             corev1.ConditionTrue,
+				LastTransitionTime: transitiontime,
+			}, corev1.PodCondition{
+				Type:               corev1.PodScheduled,
+				Status:             corev1.ConditionTrue,
+				LastTransitionTime: transitiontime,
+			},
+		}
+	}
+	return []corev1.PodCondition{}
+}
+
+func instanceStateToContainerState(i *compute.Instance) corev1.ContainerState {
+	startTime := metav1.NewTime(time.Now())
+
+	// Handle the case where the container is running.
+	if i.State == "Running" {
+		return corev1.ContainerState{
+			Running: &corev1.ContainerStateRunning{
+				StartedAt: startTime,
+			},
+		}
+	}
+
+	// Handle the case where the container failed.
+	if i.State == "Failed" {
+		return corev1.ContainerState{
+			Terminated: &corev1.ContainerStateTerminated{
+				ExitCode:   0,
+				Reason:     i.State,
+				Message:    i.State,
+				StartedAt:  startTime,
+				FinishedAt: metav1.NewTime(time.Now()),
+			},
+		}
+	}
+
+	state := i.State
+	if state == "" {
+		state = "Provisioning"
+	}
+
+	// Handle the case where the container is pending.
+	// Which should be all other aci states.
+	return corev1.ContainerState{
+		Waiting: &corev1.ContainerStateWaiting{
+			Reason:  state,
+			Message: i.State,
+		},
+	}
 }
