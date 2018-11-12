@@ -31,9 +31,6 @@ type TritonProvider struct {
 	internalIP         string
 	daemonEndpointPort int32
 
-	// Triton resources.
-	region string
-
 	client *Client
 
 	// Triton resources.
@@ -176,10 +173,11 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 		Package: pod.ObjectMeta.Labels["package"],
 		Name:    pod.Name,
 		Tags: map[string]string{
-			"PodName":     pod.Name,
-			"ClusterName": pod.ClusterName,
-			"NodeName":    pod.Spec.NodeName,
-			"UID":         string(pod.UID),
+			"PodName":           pod.Name,
+			"NodeName":          pod.Spec.NodeName,
+			"Namespce":          pod.Namespace,
+			"UID":               string(pod.UID),
+			"CreationTimestamp": pod.CreationTimestamp.String(),
 		},
 	})
 	if err != nil {
@@ -199,12 +197,14 @@ func (p *TritonProvider) UpdatePod(ctx context.Context, pod *corev1.Pod) error {
 // DeletePod takes a Kubernetes Pod and deletes it from the provider.
 func (p *TritonProvider) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 	log.Printf("Received DeletePod request for %s/%s.\n", pod.Namespace, pod.Name)
+
 	tags := make(map[string]interface{})
 	tags["NodeName"] = pod.Spec.NodeName
+	tags["Namespace"] = pod.Namespace
 
 	c, _ := p.client.Compute()
 	is, _ := c.Instances().List(ctx, &compute.ListInstancesInput{
-		Name: "triton-ubuntu-test",
+		Name: pod.Name,
 		Tags: tags,
 	})
 
@@ -218,10 +218,19 @@ func (p *TritonProvider) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 func (p *TritonProvider) GetPod(ctx context.Context, namespace, name string) (*corev1.Pod, error) {
 	log.Printf("Received GetPod request for %s/%s.\n", namespace, name)
 
+	tags := make(map[string]interface{})
+	tags["NodeName"] = p.nodeName
+	tags["Namespace"] = namespace
+	q.Q(p.nodeName)
+
 	c, _ := p.client.Compute()
-	is, _ := c.Instances().List(ctx, &compute.ListInstancesInput{Name: name})
+	is, _ := c.Instances().List(ctx, &compute.ListInstancesInput{
+		Name: name,
+		Tags: tags,
+	})
 
 	for _, i := range is {
+		q.Q(i)
 		return instanceToPod(i)
 	}
 
@@ -273,7 +282,7 @@ func (p *TritonProvider) GetPods(ctx context.Context) ([]*corev1.Pod, error) {
 
 	pods := make([]*corev1.Pod, 0, len(is))
 	for _, i := range is {
-		if i.Tags["NodeName"] != nil {
+		if i.Tags["NodeName"] == p.nodeName {
 			p, _ := instanceToPod(i)
 			pods = append(pods, p)
 		}
@@ -379,8 +388,10 @@ func instanceToPod(i *compute.Instance) (*corev1.Pod, error) {
 
 	// Take Care of time
 	var podCreationTimestamp metav1.Time
-	podCreationTimestamp = metav1.NewTime(time.Now())
-	containerStartTime := metav1.NewTime(time.Now())
+
+	podCreationTimestamp = metav1.NewTime(i.Created)
+	// TODO Find a way to get this
+	//containerStartTime := metav1.NewTime(time.Now())
 
 	/*
 	   On Triton we do not share Namespaces, so init Pod Groups or Patterns which encourage this aren't implement.   This implementation Maps 1 instance to 1 pod.
@@ -424,14 +435,12 @@ func instanceToPod(i *compute.Instance) (*corev1.Pod, error) {
 		//ImageID string `json:"imageID" protobuf:"bytes,7,opt,name=imageID"`
 		//ContainerID string `json:"containerID,omitempty" protobuf:"bytes,8,opt,name=containerID"`
 	}
-	q.Q(containerStatus)
 
 	containers := make([]corev1.Container, 0, 1)
 	containerStatuses := make([]corev1.ContainerStatus, 0, 1)
 
 	containers = append(containers, container)
 	containerStatuses = append(containerStatuses, containerStatus)
-
 	p := corev1.Pod{
 		TypeMeta: metav1.TypeMeta{
 			Kind:       "Pod",
@@ -439,28 +448,26 @@ func instanceToPod(i *compute.Instance) (*corev1.Pod, error) {
 		},
 		ObjectMeta: metav1.ObjectMeta{
 			Name:              i.Name,
-			Namespace:         "default",
-			ClusterName:       "cluster",
-			UID:               "ObjectMeta.metav1.ObjectMeta.UID",
+			Namespace:         fmt.Sprint(i.Tags["Namespace"]),
+			UID:               types.UID(fmt.Sprint(i.Tags["UID"])),
 			CreationTimestamp: podCreationTimestamp,
 		},
 		Spec: corev1.PodSpec{
-			NodeName:   "NodeName",
+			NodeName:   fmt.Sprint(i.Tags["NodeName"]),
 			Volumes:    []corev1.Volume{},
 			Containers: containers,
 		},
 		Status: corev1.PodStatus{
-			Phase:             instanceStateToPodPhase(i.State),
-			Conditions:        instanceStateToPodConditions(i.State, podCreationTimestamp),
-			Message:           "",
-			Reason:            "",
-			HostIP:            "",
-			PodIP:             i.PrimaryIP,
-			StartTime:         &containerStartTime,
+			Phase:      instanceStateToPodPhase(i.State),
+			Conditions: instanceStateToPodConditions(i.State, podCreationTimestamp),
+			Message:    "",
+			Reason:     "",
+			HostIP:     "",
+			PodIP:      i.PrimaryIP,
+			//StartTime:         &containerStartTime,
 			ContainerStatuses: containerStatuses,
 		},
 	}
-	q.Q(&p)
 
 	return &p, nil
 }
@@ -470,7 +477,6 @@ func instanceStateToPodPhase(state string) corev1.PodPhase {
 	case "provisioning":
 		return corev1.PodPending
 	case "running":
-		q.Q("We are running")
 		return corev1.PodRunning
 	case "failed":
 		return corev1.PodFailed

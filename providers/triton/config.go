@@ -14,7 +14,6 @@ import (
 const (
 	// Provider configuration defaults.
 	defaultPlatformVersion = "LATEST"
-	defaultClusterName     = "default"
 	defaultOperatingSystem = providers.OperatingSystemLinux
 
 	// Default resource capacity advertised by Triton provider.
@@ -33,7 +32,6 @@ const (
 
 // ProviderConfig represents the contents of the provider configuration file.
 type providerConfig struct {
-	Region          string
 	PlatformVersion string
 	OperatingSystem string
 	CPU             string
@@ -73,10 +71,6 @@ func (p *TritonProvider) loadConfig(r io.Reader) error {
 		return err
 	}
 
-	// Validate aggregate configuration.
-	if config.Region == "" {
-		return fmt.Errorf("Region is a required field")
-	}
 	if config.OperatingSystem != providers.OperatingSystemLinux {
 		return fmt.Errorf("Fargate does not support operating system %v", config.OperatingSystem)
 	}
@@ -104,7 +98,6 @@ func (p *TritonProvider) loadConfig(r io.Reader) error {
 		return fmt.Errorf("Pod value %v is less than the minimum %v", config.Pods, minPodCapacity)
 	}
 
-	p.region = config.Region
 	p.platformVersion = config.PlatformVersion
 	p.operatingSystem = config.OperatingSystem
 	p.capacity.cpu = config.CPU
