@@ -15,7 +15,6 @@ import (
 	"github.com/joyent/triton-go/authentication"
 	"github.com/joyent/triton-go/compute"
 	"github.com/virtual-kubelet/virtual-kubelet/manager"
-	"github.com/y0ssar1an/q"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -175,7 +174,7 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 		Tags: map[string]string{
 			"PodName":           pod.Name,
 			"NodeName":          pod.Spec.NodeName,
-			"Namespce":          pod.Namespace,
+			"Namespace":         pod.Namespace,
 			"UID":               string(pod.UID),
 			"CreationTimestamp": pod.CreationTimestamp.String(),
 		},
@@ -221,7 +220,6 @@ func (p *TritonProvider) GetPod(ctx context.Context, namespace, name string) (*c
 	tags := make(map[string]interface{})
 	tags["NodeName"] = p.nodeName
 	tags["Namespace"] = namespace
-	q.Q(p.nodeName)
 
 	c, _ := p.client.Compute()
 	is, _ := c.Instances().List(ctx, &compute.ListInstancesInput{
@@ -230,7 +228,6 @@ func (p *TritonProvider) GetPod(ctx context.Context, namespace, name string) (*c
 	})
 
 	for _, i := range is {
-		q.Q(i)
 		return instanceToPod(i)
 	}
 
@@ -462,7 +459,7 @@ func instanceToPod(i *compute.Instance) (*corev1.Pod, error) {
 			Conditions: instanceStateToPodConditions(i.State, podCreationTimestamp),
 			Message:    "",
 			Reason:     "",
-			HostIP:     "",
+			HostIP:     i.PrimaryIP,
 			PodIP:      i.PrimaryIP,
 			//StartTime:         &containerStartTime,
 			ContainerStatuses: containerStatuses,
