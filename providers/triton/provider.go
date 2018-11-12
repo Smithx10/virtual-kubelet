@@ -15,6 +15,7 @@ import (
 	"github.com/joyent/triton-go/authentication"
 	"github.com/joyent/triton-go/compute"
 	"github.com/virtual-kubelet/virtual-kubelet/manager"
+	"github.com/y0ssar1an/q"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -251,7 +252,16 @@ func (p *TritonProvider) ExecInContainer(
 func (p *TritonProvider) GetPodStatus(ctx context.Context, namespace, name string) (*corev1.PodStatus, error) {
 	log.Printf("Received GetPodStatus request for %s/%s.\n", namespace, name)
 
-	return nil, nil
+	pod, err := p.GetPod(ctx, namespace, name)
+	if err != nil {
+		return nil, err
+	}
+
+	if pod == nil {
+		return nil, nil
+	}
+
+	return &pod.Status, nil
 }
 
 // GetPods retrieves a list of all pods running on the provider (can be cached).
@@ -408,11 +418,13 @@ func instanceToPod(i *compute.Instance) (*corev1.Pod, error) {
 		State: instanceStateToContainerState(i),
 		//LastTerminationState ContainerState `json:"lastState,omitempty" protobuf:"bytes,3,opt,name=lastState"`
 		//Ready bool `json:"ready" protobuf:"varint,4,opt,name=ready"`
+		Ready: instanceStateToPodPhase(i.State) == corev1.PodRunning,
 		//RestartCount int32 `json:"restartCount" protobuf:"varint,5,opt,name=restartCount"`
 		//Image string `json:"image" protobuf:"bytes,6,opt,name=image"`
 		//ImageID string `json:"imageID" protobuf:"bytes,7,opt,name=imageID"`
 		//ContainerID string `json:"containerID,omitempty" protobuf:"bytes,8,opt,name=containerID"`
 	}
+	q.Q(containerStatus)
 
 	containers := make([]corev1.Container, 0, 1)
 	containerStatuses := make([]corev1.ContainerStatus, 0, 1)
@@ -448,8 +460,28 @@ func instanceToPod(i *compute.Instance) (*corev1.Pod, error) {
 			ContainerStatuses: containerStatuses,
 		},
 	}
+	q.Q(&p)
 
 	return &p, nil
+}
+
+func instanceStateToPodPhase(state string) corev1.PodPhase {
+	switch state {
+	case "provisioning":
+		return corev1.PodPending
+	case "running":
+		q.Q("We are running")
+		return corev1.PodRunning
+	case "failed":
+		return corev1.PodFailed
+	case "deleted":
+		return corev1.PodFailed
+	case "stopped":
+		return corev1.PodFailed
+	case "stopping":
+		return corev1.PodPending
+	}
+	return corev1.PodUnknown
 }
 
 func instanceStateToPodConditions(state string, transitiontime metav1.Time) []corev1.PodCondition {
@@ -478,7 +510,7 @@ func instanceStateToContainerState(i *compute.Instance) corev1.ContainerState {
 	startTime := metav1.NewTime(time.Now())
 
 	// Handle the case where the container is running.
-	if i.State == "Running" {
+	if i.State == "running" {
 		return corev1.ContainerState{
 			Running: &corev1.ContainerStateRunning{
 				StartedAt: startTime,
@@ -487,7 +519,7 @@ func instanceStateToContainerState(i *compute.Instance) corev1.ContainerState {
 	}
 
 	// Handle the case where the container failed.
-	if i.State == "Failed" {
+	if i.State == "failed" {
 		return corev1.ContainerState{
 			Terminated: &corev1.ContainerStateTerminated{
 				ExitCode:   0,
@@ -501,7 +533,7 @@ func instanceStateToContainerState(i *compute.Instance) corev1.ContainerState {
 
 	state := i.State
 	if state == "" {
-		state = "Provisioning"
+		state = "provisioning"
 	}
 
 	// Handle the case where the container is pending.
