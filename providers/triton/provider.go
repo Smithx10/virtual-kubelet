@@ -173,7 +173,7 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	c, err := p.client.Compute()
 	i, err := c.Instances().Create(ctx, &compute.CreateInstanceInput{
 		Image:   pod.Spec.Containers[0].Image,
-		Package: "sample-2G",
+		Package: pod.ObjectMeta.Labels["package"],
 		Name:    pod.Name,
 		Tags: map[string]string{
 			"PodName":     pod.Name,
@@ -450,7 +450,7 @@ func instanceToPod(i *compute.Instance) (*corev1.Pod, error) {
 			Containers: containers,
 		},
 		Status: corev1.PodStatus{
-			Phase:             "Phase",
+			Phase:             instanceStateToPodPhase(i.State),
 			Conditions:        instanceStateToPodConditions(i.State, podCreationTimestamp),
 			Message:           "",
 			Reason:            "",
