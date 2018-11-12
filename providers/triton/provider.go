@@ -242,7 +242,7 @@ func (p *TritonProvider) GetContainerLogs(ctx context.Context, namespace, podNam
 
 // GetPodFullName retrieves the full pod name as defined in the provider context.
 func (p *TritonProvider) GetPodFullName(namespace string, pod string) string {
-	return ""
+	return fmt.Sprintf("%s-%s", namespace, pod)
 }
 
 // ExecInContainer executes a command in a container in the pod, copying data
