@@ -17,6 +17,7 @@ import (
 	"github.com/joyent/triton-go/authentication"
 	"github.com/joyent/triton-go/compute"
 	"github.com/virtual-kubelet/virtual-kubelet/manager"
+	"github.com/y0ssar1an/q"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -26,7 +27,7 @@ import (
 
 // TritonProvider implements the virtual-kubelet provider interface.
 type TritonProvider struct {
-	probes             map[string]string
+	probes             map[string]bool
 	resourceManager    *manager.ResourceManager
 	nodeName           string
 	operatingSystem    string
@@ -131,7 +132,7 @@ func NewTritonProvider(
 	}
 
 	p := TritonProvider{
-		probes:             make(map[string]string),
+		probes:             make(map[string]bool),
 		resourceManager:    rm,
 		nodeName:           nodeName,
 		operatingSystem:    operatingSystem,
@@ -278,7 +279,7 @@ func (p *TritonProvider) GetPodStatus(ctx context.Context, namespace, name strin
 		return nil, nil
 	}
 
-	if pod.Spec.Containers[0].LivenessProbe != nil || pod.Spec.Containers[0].ReadinessProbe != nil {
+	if pod.Spec.Containers[0].LivenessProbe != nil || pod.Spec.Containers[0].ReadinessProbe != nil && pod.Status.PodIP != "" {
 		p.RunProbes(ctx, pod)
 	}
 
@@ -572,27 +573,33 @@ func instanceStateToContainerState(i *compute.Instance) corev1.ContainerState {
 
 func (p *TritonProvider) RunProbes(ctx context.Context, pod *corev1.Pod) error {
 	fullname := p.GetPodFullName(pod.Namespace, pod.Name)
-	if p.probes[fullname] == "running" {
+	if p.probes[fullname] {
 		return nil
 	}
 
+	p.probes[fullname] = true
+
 	go func() {
-		p.probes[fullname] = "running"
+		failcount := 0
 		time.Sleep(time.Duration(pod.Spec.Containers[0].LivenessProbe.InitialDelaySeconds) * time.Second)
 		for {
-			if p.probes[fullname] != "running" {
+			q.Q(p.probes)
+			if !p.probes[fullname] {
 				break
 			}
 
 			time.Sleep(time.Duration(pod.Spec.Containers[0].LivenessProbe.PeriodSeconds) * time.Second)
-			fmt.Println("Running TCP Check")
+			fmt.Println(pod.Name + ": Running TCP Check")
 			conn, err := net.DialTimeout("tcp", net.JoinHostPort(pod.Status.PodIP, fmt.Sprint(pod.Spec.Containers[0].LivenessProbe.Handler.TCPSocket.Port.IntVal)), time.Duration(pod.Spec.Containers[0].LivenessProbe.TimeoutSeconds)*time.Second)
+			q.Q(fmt.Sprint(pod.Spec.Containers[0].LivenessProbe.Handler.TCPSocket.Port.IntVal))
+			q.Q(pod.Status.PodIP)
 			if err != nil {
-				fmt.Println("Shit is broken")
+				failcount++
+				fmt.Println(pod.Name + ": Shit is broken " + fmt.Sprint(failcount))
 			}
 			if conn != nil {
 				conn.Close()
-				fmt.Println("Port 22 is listening")
+				fmt.Println(pod.Name + ": Port 22 is listening")
 			}
 
 		}
