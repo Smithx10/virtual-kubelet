@@ -12,12 +12,12 @@ spec:
   template:
     metadata:
       labels:
-        package: b-4gb-20gb
+        package: sample-1G
         app: guestbook
         tier: frontend
     spec:
       containers:
-      - image: 1f11188a-c71c-11e8-83d4-370e2a698b16
+      - image: 7b5981c4-1889-11e7-b4c5-3f3bdfc9b88b
         name: triton-ubuntu-sumesh
         resources:
           requests:

@@ -21,6 +21,16 @@ spec:
       protocol: TCP
     - containerPort: 443
       name: https
+    readinessProbe:
+      tcpSocket:
+        port: 22
+      initialDelaySeconds: 2
+      periodSeconds: 2
+    livenessProbe:
+      tcpSocket:
+        port: 22
+      initialDelaySeconds: 2
+      periodSeconds: 2
   dnsPolicy: ClusterFirst
   nodeSelector:
     kubernetes.io/role: agent

@@ -2,11 +2,13 @@ package triton
 
 import (
 	"context"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"io"
 	"io/ioutil"
 	"log"
+	"net"
 	"os"
 	"sync"
 	"time"
@@ -24,6 +26,7 @@ import (
 
 // TritonProvider implements the virtual-kubelet provider interface.
 type TritonProvider struct {
+	probes             map[string]string
 	resourceManager    *manager.ResourceManager
 	nodeName           string
 	operatingSystem    string
@@ -128,6 +131,7 @@ func NewTritonProvider(
 	}
 
 	p := TritonProvider{
+		probes:             make(map[string]string),
 		resourceManager:    rm,
 		nodeName:           nodeName,
 		operatingSystem:    operatingSystem,
@@ -166,6 +170,9 @@ func (p *TritonProvider) Capacity(ctx context.Context) corev1.ResourceList {
 // CreatePod takes a Kubernetes Pod and deploys it within the Triton provider.
 func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	log.Printf("Received CreatePod request for %+v.\n", pod)
+
+	PodSpec, _ := json.Marshal(pod)
+
 	c, err := p.client.Compute()
 	i, err := c.Instances().Create(ctx, &compute.CreateInstanceInput{
 		Image:   pod.Spec.Containers[0].Image,
@@ -177,6 +184,7 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 			"Namespace":         pod.Namespace,
 			"UID":               string(pod.UID),
 			"CreationTimestamp": pod.CreationTimestamp.String(),
+			"PodSpec":           string(PodSpec),
 		},
 	})
 	if err != nil {
@@ -196,6 +204,8 @@ func (p *TritonProvider) UpdatePod(ctx context.Context, pod *corev1.Pod) error {
 // DeletePod takes a Kubernetes Pod and deletes it from the provider.
 func (p *TritonProvider) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 	log.Printf("Received DeletePod request for %s/%s.\n", pod.Namespace, pod.Name)
+
+	delete(p.probes, p.GetPodFullName(pod.Namespace, pod.Name))
 
 	tags := make(map[string]interface{})
 	tags["NodeName"] = pod.Spec.NodeName
@@ -259,12 +269,17 @@ func (p *TritonProvider) GetPodStatus(ctx context.Context, namespace, name strin
 	log.Printf("Received GetPodStatus request for %s/%s.\n", namespace, name)
 
 	pod, err := p.GetPod(ctx, namespace, name)
+
 	if err != nil {
 		return nil, err
 	}
 
 	if pod == nil {
 		return nil, nil
+	}
+
+	if pod.Spec.Containers[0].LivenessProbe != nil || pod.Spec.Containers[0].ReadinessProbe != nil {
+		p.RunProbes(ctx, pod)
 	}
 
 	return &pod.Status, nil
@@ -383,6 +398,11 @@ func (p *TritonProvider) OperatingSystem() string {
 
 func instanceToPod(i *compute.Instance) (*corev1.Pod, error) {
 
+	// Get Pod Spec from the Metadata
+	bytes := []byte(fmt.Sprint(i.Tags["PodSpec"]))
+	var podSpec *corev1.Pod
+	json.Unmarshal(bytes, &podSpec)
+
 	// Take Care of time
 	var podCreationTimestamp metav1.Time
 
@@ -408,6 +428,7 @@ func instanceToPod(i *compute.Instance) (*corev1.Pod, error) {
 		//VolumeMounts []VolumeMount `json:"volumeMounts,omitempty" patchStrategy:"merge" patchMergeKey:"mountPath" protobuf:"bytes,9,rep,name=volumeMounts"`
 		//VolumeDevices []VolumeDevice `json:"volumeDevices,omitempty" patchStrategy:"merge" patchMergeKey:"devicePath" protobuf:"bytes,21,rep,name=volumeDevices"`
 		//LivenessProbe *Probe `json:"livenessProbe,omitempty" protobuf:"bytes,10,opt,name=livenessProbe"`
+		LivenessProbe: podSpec.Spec.Containers[0].LivenessProbe,
 		//ReadinessProbe *Probe `json:"readinessProbe,omitempty" protobuf:"bytes,11,opt,name=readinessProbe"`
 		//Lifecycle *Lifecycle `json:"lifecycle,omitempty" protobuf:"bytes,12,opt,name=lifecycle"`
 		//TerminationMessagePath string `json:"terminationMessagePath,omitempty" protobuf:"bytes,13,opt,name=terminationMessagePath"`
@@ -547,4 +568,34 @@ func instanceStateToContainerState(i *compute.Instance) corev1.ContainerState {
 			Message: i.State,
 		},
 	}
+}
+
+func (p *TritonProvider) RunProbes(ctx context.Context, pod *corev1.Pod) error {
+	fullname := p.GetPodFullName(pod.Namespace, pod.Name)
+	if p.probes[fullname] == "running" {
+		return nil
+	}
+
+	go func() {
+		p.probes[fullname] = "running"
+		time.Sleep(time.Duration(pod.Spec.Containers[0].LivenessProbe.InitialDelaySeconds) * time.Second)
+		for {
+			if p.probes[fullname] != "running" {
+				break
+			}
+
+			time.Sleep(time.Duration(pod.Spec.Containers[0].LivenessProbe.PeriodSeconds) * time.Second)
+			fmt.Println("Running TCP Check")
+			conn, err := net.DialTimeout("tcp", net.JoinHostPort(pod.Status.PodIP, fmt.Sprint(pod.Spec.Containers[0].LivenessProbe.Handler.TCPSocket.Port.IntVal)), time.Duration(pod.Spec.Containers[0].LivenessProbe.TimeoutSeconds)*time.Second)
+			if err != nil {
+				fmt.Println("Shit is broken")
+			}
+			if conn != nil {
+				conn.Close()
+				fmt.Println("Port 22 is listening")
+			}
+
+		}
+	}()
+	return nil
 }
