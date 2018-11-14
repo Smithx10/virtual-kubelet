@@ -9,6 +9,7 @@ import (
 	"io/ioutil"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"sync"
 	"time"
@@ -207,6 +208,7 @@ func (p *TritonProvider) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 	log.Printf("Received DeletePod request for %s/%s.\n", pod.Namespace, pod.Name)
 
 	delete(p.probes, p.GetPodFullName(pod.Namespace, pod.Name))
+	q.Q(p.probes)
 
 	tags := make(map[string]interface{})
 	tags["NodeName"] = pod.Spec.NodeName
@@ -278,8 +280,8 @@ func (p *TritonProvider) GetPodStatus(ctx context.Context, namespace, name strin
 	if pod == nil {
 		return nil, nil
 	}
-
-	if pod.Spec.Containers[0].LivenessProbe != nil || pod.Spec.Containers[0].ReadinessProbe != nil && pod.Status.PodIP != "" {
+	q.Q(pod.Name, pod.Status.PodIP)
+	if (pod.Spec.Containers[0].LivenessProbe != nil || pod.Spec.Containers[0].ReadinessProbe != nil) && pod.Status.PodIP != "" {
 		p.RunProbes(ctx, pod)
 	}
 
@@ -579,30 +581,70 @@ func (p *TritonProvider) RunProbes(ctx context.Context, pod *corev1.Pod) error {
 
 	p.probes[fullname] = true
 
-	go func() {
-		failcount := 0
-		time.Sleep(time.Duration(pod.Spec.Containers[0].LivenessProbe.InitialDelaySeconds) * time.Second)
-		for {
-			q.Q(p.probes)
-			if !p.probes[fullname] {
-				break
-			}
+	if pod.Spec.Containers[0].LivenessProbe.Handler.TCPSocket != nil {
+		go func() {
+			failcount := 0
+			time.Sleep(time.Duration(pod.Spec.Containers[0].LivenessProbe.InitialDelaySeconds) * time.Second)
+			for {
+				if !p.probes[fullname] {
+					break
+				}
 
-			time.Sleep(time.Duration(pod.Spec.Containers[0].LivenessProbe.PeriodSeconds) * time.Second)
-			fmt.Println(pod.Name + ": Running TCP Check")
-			conn, err := net.DialTimeout("tcp", net.JoinHostPort(pod.Status.PodIP, fmt.Sprint(pod.Spec.Containers[0].LivenessProbe.Handler.TCPSocket.Port.IntVal)), time.Duration(pod.Spec.Containers[0].LivenessProbe.TimeoutSeconds)*time.Second)
-			q.Q(fmt.Sprint(pod.Spec.Containers[0].LivenessProbe.Handler.TCPSocket.Port.IntVal))
-			q.Q(pod.Status.PodIP)
-			if err != nil {
-				failcount++
-				fmt.Println(pod.Name + ": Shit is broken " + fmt.Sprint(failcount))
-			}
-			if conn != nil {
-				conn.Close()
-				fmt.Println(pod.Name + ": Port 22 is listening")
-			}
+				time.Sleep(time.Duration(pod.Spec.Containers[0].LivenessProbe.PeriodSeconds) * time.Second)
+				fmt.Println(pod.Name + ": Running TCP Check")
+				conn, err := net.DialTimeout("tcp", net.JoinHostPort(pod.Status.PodIP, fmt.Sprint(pod.Spec.Containers[0].LivenessProbe.Handler.TCPSocket.Port.IntVal)), time.Duration(pod.Spec.Containers[0].LivenessProbe.TimeoutSeconds)*time.Second)
+				if err != nil {
+					failcount++
+					fmt.Println(pod.Name + ": Shit is broken " + fmt.Sprint(failcount))
+				}
+				if conn != nil {
+					conn.Close()
+					fmt.Println(pod.Name + ": Port " + fmt.Sprint(pod.Spec.Containers[0].LivenessProbe.Handler.TCPSocket.Port.
+						IntVal) + " is listening")
+				}
 
-		}
-	}()
+			}
+		}()
+	}
+
+	if pod.Spec.Containers[0].LivenessProbe.Handler.HTTPGet != nil {
+		fmt.Println("Running a HTTP Liveness Check")
+		go func() {
+			failcount := 0
+			time.Sleep(time.Duration(pod.Spec.Containers[0].LivenessProbe.InitialDelaySeconds) * time.Second)
+			for {
+				if !p.probes[fullname] {
+					break
+				}
+
+				time.Sleep(time.Duration(pod.Spec.Containers[0].LivenessProbe.PeriodSeconds) * time.Second)
+				fmt.Println(pod.Name + ": Running HTTP Check")
+				resp, err := http.Get(fmt.Sprintf("http://%s:%d%s", pod.Status.PodIP, pod.Spec.Containers[0].LivenessProbe.HTTPGet.Port.IntVal, pod.Spec.Containers[0].LivenessProbe.HTTPGet.Path))
+				if err != nil {
+					failcount++
+					fmt.Println(pod.Name + ": Shit is broken " + fmt.Sprint(failcount))
+				}
+				if pod.Spec.Containers[0].LivenessProbe.Handler.HTTPGet.HTTPHeaders != nil {
+					if resp != nil {
+						if resp.Header.Get(pod.Spec.Containers[0].LivenessProbe.HTTPGet.HTTPHeaders[0].Name) == pod.Spec.Containers[0].LivenessProbe.HTTPGet.HTTPHeaders[0].Value {
+							fmt.Println("Header Matches")
+						} else {
+							failcount++
+							fmt.Println("Header Doesn't Match")
+						}
+
+					}
+
+				} else {
+					failcount = 0
+					fmt.Println("HTTP Passed")
+				}
+				if failcount == int(pod.Spec.Containers[0].LivenessProbe.FailureThreshold) {
+					fmt.Println("Terminating Pod, FailureThreshold Hit")
+					p.DeletePod(ctx, pod)
+				}
+			}
+		}()
+	}
 	return nil
 }
