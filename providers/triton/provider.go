@@ -18,7 +18,6 @@ import (
 	"github.com/joyent/triton-go/authentication"
 	"github.com/joyent/triton-go/compute"
 	"github.com/virtual-kubelet/virtual-kubelet/manager"
-	"github.com/y0ssar1an/q"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -224,7 +223,6 @@ func (p *TritonProvider) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 			_, err := c.Instances().Get(ctx, &compute.GetInstanceInput{ID: i.ID})
 			if err != nil {
 				fmt.Println("Instance Deleted")
-				delete(p.probes, p.GetPodFullName(pod.Namespace, pod.Name))
 				return nil
 			}
 
@@ -292,7 +290,6 @@ func (p *TritonProvider) GetPodStatus(ctx context.Context, namespace, name strin
 		p.RunProbes(ctx, pod)
 	}
 
-	q.Q(pod.Status)
 	return &pod.Status, nil
 }
 
@@ -581,11 +578,6 @@ func instanceStateToContainerState(i *compute.Instance) corev1.ContainerState {
 	}
 }
 
-func (p *TritonProvider) EchoHi(ctx context.Context, ch <-chan string) {
-	fmt.Println("rawr")
-
-}
-
 func (p *TritonProvider) RunProbes(ctx context.Context, pod *corev1.Pod) error {
 	fullname := p.GetPodFullName(pod.Namespace, pod.Name)
 	if p.probes[fullname] {
@@ -618,6 +610,7 @@ func (p *TritonProvider) RunProbes(ctx context.Context, pod *corev1.Pod) error {
 				}
 				if failcount == int(pod.Spec.Containers[0].LivenessProbe.FailureThreshold) {
 					fmt.Println("Terminating Pod, FailureThreshold Hit")
+					delete(p.probes, p.GetPodFullName(pod.Namespace, pod.Name))
 					p.DeletePod(ctx, pod)
 					pod.Status.Phase = instanceStateToPodPhase("failed")
 					break
@@ -661,7 +654,9 @@ func (p *TritonProvider) RunProbes(ctx context.Context, pod *corev1.Pod) error {
 				}
 				if failcount == int(pod.Spec.Containers[0].LivenessProbe.FailureThreshold) {
 					fmt.Println("Terminating Pod, FailureThreshold Hit")
+					delete(p.probes, p.GetPodFullName(pod.Namespace, pod.Name))
 					p.DeletePod(ctx, pod)
+					pod.Status.Phase = instanceStateToPodPhase("failed")
 					break
 				}
 			}
