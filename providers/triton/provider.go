@@ -207,9 +207,6 @@ func (p *TritonProvider) UpdatePod(ctx context.Context, pod *corev1.Pod) error {
 func (p *TritonProvider) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 	log.Printf("Received DeletePod request for %s/%s.\n", pod.Namespace, pod.Name)
 
-	delete(p.probes, p.GetPodFullName(pod.Namespace, pod.Name))
-	q.Q(p.probes)
-
 	tags := make(map[string]interface{})
 	tags["NodeName"] = pod.Spec.NodeName
 	tags["Namespace"] = pod.Namespace
@@ -221,7 +218,18 @@ func (p *TritonProvider) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 	})
 
 	for _, i := range is {
-		return c.Instances().Delete(ctx, &compute.DeleteInstanceInput{ID: i.ID})
+		c.Instances().Delete(ctx, &compute.DeleteInstanceInput{ID: i.ID})
+
+		for {
+			_, err := c.Instances().Get(ctx, &compute.GetInstanceInput{ID: i.ID})
+			if err != nil {
+				fmt.Println("Instance Deleted")
+				delete(p.probes, p.GetPodFullName(pod.Namespace, pod.Name))
+				return nil
+			}
+
+			time.Sleep(1 * time.Second)
+		}
 	}
 	return nil
 }
@@ -280,11 +288,11 @@ func (p *TritonProvider) GetPodStatus(ctx context.Context, namespace, name strin
 	if pod == nil {
 		return nil, nil
 	}
-	q.Q(pod.Name, pod.Status.PodIP)
 	if (pod.Spec.Containers[0].LivenessProbe != nil || pod.Spec.Containers[0].ReadinessProbe != nil) && pod.Status.PodIP != "" {
 		p.RunProbes(ctx, pod)
 	}
 
+	q.Q(pod.Status)
 	return &pod.Status, nil
 }
 
@@ -573,6 +581,11 @@ func instanceStateToContainerState(i *compute.Instance) corev1.ContainerState {
 	}
 }
 
+func (p *TritonProvider) EchoHi(ctx context.Context, ch <-chan string) {
+	fmt.Println("rawr")
+
+}
+
 func (p *TritonProvider) RunProbes(ctx context.Context, pod *corev1.Pod) error {
 	fullname := p.GetPodFullName(pod.Namespace, pod.Name)
 	if p.probes[fullname] {
@@ -599,8 +612,15 @@ func (p *TritonProvider) RunProbes(ctx context.Context, pod *corev1.Pod) error {
 				}
 				if conn != nil {
 					conn.Close()
+					failcount = 0
 					fmt.Println(pod.Name + ": Port " + fmt.Sprint(pod.Spec.Containers[0].LivenessProbe.Handler.TCPSocket.Port.
 						IntVal) + " is listening")
+				}
+				if failcount == int(pod.Spec.Containers[0].LivenessProbe.FailureThreshold) {
+					fmt.Println("Terminating Pod, FailureThreshold Hit")
+					p.DeletePod(ctx, pod)
+					pod.Status.Phase = instanceStateToPodPhase("failed")
+					break
 				}
 
 			}
@@ -642,6 +662,7 @@ func (p *TritonProvider) RunProbes(ctx context.Context, pod *corev1.Pod) error {
 				if failcount == int(pod.Spec.Containers[0].LivenessProbe.FailureThreshold) {
 					fmt.Println("Terminating Pod, FailureThreshold Hit")
 					p.DeletePod(ctx, pod)
+					break
 				}
 			}
 		}()

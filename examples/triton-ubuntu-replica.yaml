@@ -3,7 +3,7 @@ kind: ReplicaSet
 metadata:
   name: triton-ubuntu-test
 spec:
-  replicas: 3
+  replicas: 1
   selector:
     matchLabels:
       tier: frontend
@@ -32,6 +32,11 @@ spec:
           protocol: TCP
         - containerPort: 443
           name: https
+        livenessProbe:
+          tcpSocket:
+            port: 22
+          initialDelaySeconds: 5
+          periodSeconds: 5
       dnsPolicy: ClusterFirst
       nodeSelector:
         kubernetes.io/role: agent
