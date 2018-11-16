@@ -25,9 +25,139 @@ import (
 	"k8s.io/client-go/tools/remotecommand"
 )
 
+type TritonPod struct {
+	shutdownCtx context.Context
+	shutdown    context.CancelFunc
+	pod         *corev1.Pod
+	status      *corev1.PodStatus
+	statusLock  sync.RWMutex
+	probes      map[string]*corev1.Probe
+	fn          string
+}
+
+func (p *TritonProvider) GetInstStatus(tp *TritonPod) {
+	for {
+		select {
+		case <-tp.shutdownCtx.Done():
+			return
+		default:
+			c, err := p.client.Compute()
+			if err != nil {
+				return
+			}
+			fmt.Println(c, err)
+			//instanceToPod()
+			tp.statusLock.Lock()
+			tp.status.Phase = instanceStateToPodPhase("running")
+			tp.statusLock.Unlock()
+			time.Sleep(5 * time.Second)
+		}
+	}
+}
+
+// Readiness
+func (p *TritonProvider) RunReadiness(tp *TritonPod) {
+	// Set Cleaner Var
+	r := tp.probes["readiness"]
+	// Perform Initial Readiness Delay
+	time.Sleep(time.Duration(r.InitialDelaySeconds) * time.Second)
+	// Set Failure Count.
+	failcount := 0
+	for {
+		select {
+		case <-tp.shutdownCtx.Done():
+			return
+		default:
+			//tp.statusLock.Lock()
+			//tp.status.Phase = instanceStateToPodPhase("failed")
+			//tp.statusLock.Unlock()
+			//fmt.Println(failcount)
+		}
+		time.Sleep(time.Duration(r.PeriodSeconds) * time.Second)
+	}
+}
+
+// Liveness
+func (p *TritonProvider) RunLiveness(tp *TritonPod) {
+	// Set Cleaner Var
+	l := tp.probes["liveness"]
+	// Perform Initial Liveness Delay
+	time.Sleep(time.Duration(l.InitialDelaySeconds) * time.Second)
+	// Set Failure Count.
+	failcount := 0
+
+	// Handle TCP
+	if l.Handler.TCPSocket != nil {
+		for {
+			select {
+			case <-tp.shutdownCtx.Done():
+				return
+			default:
+				fmt.Println(tp.fn + ": Running TCP Check on " + tp.pod.Status.PodIP + ":" + l.Handler.TCPSocket.Port.String())
+				c, err := net.DialTimeout("tcp", net.JoinHostPort(tp.pod.Status.PodIP, l.Handler.TCPSocket.Port.String()), time.Duration(l.TimeoutSeconds)*time.Second)
+				if err != nil {
+					failcount++
+					fmt.Println(tp.fn + ": TCP Check Failed.  Failure Count: " + fmt.Sprint(failcount))
+				}
+				if c != nil {
+					c.Close()
+					failcount = 0
+					fmt.Println(tp.fn + ": TCP Check Passed. Port: " + fmt.Sprint(l.Handler.TCPSocket.Port.IntVal) + " is listening")
+				}
+				if failcount == int(l.FailureThreshold) {
+					fmt.Println("FailureThreshold Hit.  Setting PodPhase to \"failed\"}")
+					tp.statusLock.Lock()
+					tp.status.Phase = instanceStateToPodPhase("failed")
+					tp.statusLock.Unlock()
+					return
+				}
+			}
+			time.Sleep(time.Duration(l.PeriodSeconds) * time.Second)
+		}
+	}
+	// Handle HTTP
+	if l.Handler.HTTPGet != nil {
+		for {
+			select {
+			case <-tp.shutdownCtx.Done():
+				return
+			default:
+				fmt.Println(tp.fn + ": Running HTTP Check")
+				r, err := http.Get(fmt.Sprintf("http://%s:%d%s", tp.pod.Status.PodIP, l.HTTPGet.Port.IntVal, l.HTTPGet.Path))
+				if err != nil {
+					failcount++
+					fmt.Println(tp.fn + ": HTTP Check Failed.  Count: " + fmt.Sprint(failcount))
+				}
+				if l.Handler.HTTPGet.HTTPHeaders != nil {
+					if r != nil {
+						if r.Header.Get(l.HTTPGet.HTTPHeaders[0].Name) == l.HTTPGet.HTTPHeaders[0].Value {
+							fmt.Println("Header Check Passed. " + l.HTTPGet.HTTPHeaders[0].Name + " == " + l.HTTPGet.HTTPHeaders[0].Value)
+						} else {
+							failcount++
+							fmt.Println("Header Check Failed. " + l.HTTPGet.HTTPHeaders[0].Name + " != " + l.HTTPGet.HTTPHeaders[0].Value)
+						}
+					}
+
+				} else {
+					if failcount == int(l.FailureThreshold) {
+						fmt.Println("FailureThreshold Hit.  Setting PodPhase to \"failed\"}")
+						tp.statusLock.Lock()
+						tp.status.Phase = instanceStateToPodPhase("failed")
+						tp.statusLock.Unlock()
+						return
+					}
+				}
+			}
+		}
+		time.Sleep(time.Duration(l.PeriodSeconds) * time.Second)
+	}
+
+}
+
 // TritonProvider implements the virtual-kubelet provider interface.
 type TritonProvider struct {
-	probes             map[string]bool
+	//pods map[*corev1.Pod]map[string]*TritonProbe
+	pods               map[string]*TritonPod
 	resourceManager    *manager.ResourceManager
 	nodeName           string
 	operatingSystem    string
@@ -132,7 +262,8 @@ func NewTritonProvider(
 	}
 
 	p := TritonProvider{
-		probes:             make(map[string]bool),
+		//probes:             make(map[*corev1.Pod]map[string]*TritonProbe),
+		pods:               make(map[string]*TritonPod),
 		resourceManager:    rm,
 		nodeName:           nodeName,
 		operatingSystem:    operatingSystem,
@@ -172,8 +303,29 @@ func (p *TritonProvider) Capacity(ctx context.Context) corev1.ResourceList {
 func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	log.Printf("Received CreatePod request for %+v.\n", pod)
 
+	// Use Pod Namespace and Name for map key.
+	fn := p.GetPodFullName(pod.Namespace, pod.Name)
+
+	// Assign Probes to TritonPod Struct
+	tprobes := make(map[string]*corev1.Probe)
+
+	// Create the Context for Terminating the GoRoutines which will UpdateState and Phase,  and Run Probes
+	ctxTp, cancel := context.WithCancel(ctx)
+
+	// Init the New Triton Pod Struct.
+	p.pods[fn] = &TritonPod{
+		shutdownCtx: ctxTp,
+		shutdown:    cancel,
+		pod:         pod,
+		status:      &pod.Status,
+		probes:      tprobes,
+		fn:          fn,
+	}
+
+	// Marshal the Pod.Spec that was recieved from the Masters and write store it on the instance.  In the event that Virtual Kubelet Crashes we can rehydrate from the tag.
 	PodSpec, _ := json.Marshal(pod)
 
+	//  Reach out to Triton to create an Instance
 	c, err := p.client.Compute()
 	i, err := c.Instances().Create(ctx, &compute.CreateInstanceInput{
 		Image:   pod.Spec.Containers[0].Image,
@@ -191,7 +343,39 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	if err != nil {
 		return err
 	}
-	fmt.Println("Created: " + i.Name)
+	// Block Until Triton Creates an Instance and Cache first instToPod on the TritonPod.Pod Struct
+	for {
+		running, err := c.Instances().Get(ctx, &compute.GetInstanceInput{ID: i.ID})
+		if err != nil {
+			return err
+		}
+		if running.PrimaryIP != "" {
+			converted, err := instanceToPod(running)
+			if err != nil {
+				return err
+			}
+			p.pods[fn].pod = converted
+			break
+		}
+		time.Sleep(2 * time.Second)
+	}
+
+	// Kick Off Go Routine which Polls Triton every N seconds for instance status. (See triton.toml for Poll Rate). This Go Routine will update the Containers State, and Pod Phases.  DeletePodwill clean up this Routine.
+	go p.GetInstStatus(p.pods[fn])
+
+	// Liveness
+	if pod.Spec.Containers[0].LivenessProbe != nil {
+		tprobes["liveness"] = pod.Spec.Containers[0].LivenessProbe
+		go p.RunLiveness(p.pods[fn])
+	}
+
+	// Readiness
+	if pod.Spec.Containers[0].ReadinessProbe != nil {
+		tprobes["readiness"] = pod.Spec.Containers[0].ReadinessProbe
+		go p.RunReadiness(p.pods[fn])
+	}
+
+	fmt.Sprintf("Created: " + i.Name)
 
 	return nil
 }
@@ -206,6 +390,8 @@ func (p *TritonProvider) UpdatePod(ctx context.Context, pod *corev1.Pod) error {
 func (p *TritonProvider) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 	log.Printf("Received DeletePod request for %s/%s.\n", pod.Namespace, pod.Name)
 
+	fn := p.GetPodFullName(pod.Namespace, pod.Name)
+
 	tags := make(map[string]interface{})
 	tags["NodeName"] = pod.Spec.NodeName
 	tags["Namespace"] = pod.Namespace
@@ -215,6 +401,8 @@ func (p *TritonProvider) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 		Name: pod.Name,
 		Tags: tags,
 	})
+
+	p.pods[fn].shutdown()
 
 	for _, i := range is {
 		c.Instances().Delete(ctx, &compute.DeleteInstanceInput{ID: i.ID})
@@ -277,20 +465,10 @@ func (p *TritonProvider) ExecInContainer(
 func (p *TritonProvider) GetPodStatus(ctx context.Context, namespace, name string) (*corev1.PodStatus, error) {
 	log.Printf("Received GetPodStatus request for %s/%s.\n", namespace, name)
 
-	pod, err := p.GetPod(ctx, namespace, name)
-
-	if err != nil {
-		return nil, err
-	}
-
-	if pod == nil {
-		return nil, nil
-	}
-	if (pod.Spec.Containers[0].LivenessProbe != nil || pod.Spec.Containers[0].ReadinessProbe != nil) && pod.Status.PodIP != "" {
-		p.RunProbes(ctx, pod)
-	}
-
-	return &pod.Status, nil
+	//if (pod.Spec.Containers[0].LivenessProbe != nil || pod.Spec.Containers[0].ReadinessProbe != nil) && pod.Status.PodIP != "" {
+	//p.RunProbes(ctx, pod)
+	//}
+	return p.pods[p.GetPodFullName(namespace, name)].status, nil
 }
 
 // GetPods retrieves a list of all pods running on the provider (can be cached).
@@ -407,9 +585,9 @@ func (p *TritonProvider) OperatingSystem() string {
 func instanceToPod(i *compute.Instance) (*corev1.Pod, error) {
 
 	// Get Pod Spec from the Metadata
-	bytes := []byte(fmt.Sprint(i.Tags["PodSpec"]))
-	var podSpec *corev1.Pod
-	json.Unmarshal(bytes, &podSpec)
+	//bytes := []byte(fmt.Sprint(i.Tags["PodSpec"]))
+	//var podSpec *corev1.Pod
+	//json.Unmarshal(bytes, &podSpec)
 
 	// Take Care of time
 	var podCreationTimestamp metav1.Time
@@ -436,7 +614,7 @@ func instanceToPod(i *compute.Instance) (*corev1.Pod, error) {
 		//VolumeMounts []VolumeMount `json:"volumeMounts,omitempty" patchStrategy:"merge" patchMergeKey:"mountPath" protobuf:"bytes,9,rep,name=volumeMounts"`
 		//VolumeDevices []VolumeDevice `json:"volumeDevices,omitempty" patchStrategy:"merge" patchMergeKey:"devicePath" protobuf:"bytes,21,rep,name=volumeDevices"`
 		//LivenessProbe *Probe `json:"livenessProbe,omitempty" protobuf:"bytes,10,opt,name=livenessProbe"`
-		LivenessProbe: podSpec.Spec.Containers[0].LivenessProbe,
+		//LivenessProbe: podSpec.Spec.Containers[0].LivenessProbe,
 		//ReadinessProbe *Probe `json:"readinessProbe,omitempty" protobuf:"bytes,11,opt,name=readinessProbe"`
 		//Lifecycle *Lifecycle `json:"lifecycle,omitempty" protobuf:"bytes,12,opt,name=lifecycle"`
 		//TerminationMessagePath string `json:"terminationMessagePath,omitempty" protobuf:"bytes,13,opt,name=terminationMessagePath"`
@@ -447,6 +625,8 @@ func instanceToPod(i *compute.Instance) (*corev1.Pod, error) {
 		//StdinOnce bool `json:"stdinOnce,omitempty" protobuf:"varint,17,opt,name=stdinOnce"`
 		//TTY bool `json:"tty,omitempty" protobuf:"varint,18,opt,name=tty"`
 	}
+
+	// Return
 
 	containerStatus := corev1.ContainerStatus{
 		//Name string `json:"name" protobuf:"bytes,1,opt,name=name"`
@@ -576,91 +756,4 @@ func instanceStateToContainerState(i *compute.Instance) corev1.ContainerState {
 			Message: i.State,
 		},
 	}
-}
-
-func (p *TritonProvider) RunProbes(ctx context.Context, pod *corev1.Pod) error {
-	fullname := p.GetPodFullName(pod.Namespace, pod.Name)
-	if p.probes[fullname] {
-		return nil
-	}
-
-	p.probes[fullname] = true
-
-	if pod.Spec.Containers[0].LivenessProbe.Handler.TCPSocket != nil {
-		go func() {
-			failcount := 0
-			time.Sleep(time.Duration(pod.Spec.Containers[0].LivenessProbe.InitialDelaySeconds) * time.Second)
-			for {
-				if !p.probes[fullname] {
-					break
-				}
-
-				time.Sleep(time.Duration(pod.Spec.Containers[0].LivenessProbe.PeriodSeconds) * time.Second)
-				fmt.Println(pod.Name + ": Running TCP Check")
-				conn, err := net.DialTimeout("tcp", net.JoinHostPort(pod.Status.PodIP, fmt.Sprint(pod.Spec.Containers[0].LivenessProbe.Handler.TCPSocket.Port.IntVal)), time.Duration(pod.Spec.Containers[0].LivenessProbe.TimeoutSeconds)*time.Second)
-				if err != nil {
-					failcount++
-					fmt.Println(pod.Name + ": Shit is broken " + fmt.Sprint(failcount))
-				}
-				if conn != nil {
-					conn.Close()
-					failcount = 0
-					fmt.Println(pod.Name + ": Port " + fmt.Sprint(pod.Spec.Containers[0].LivenessProbe.Handler.TCPSocket.Port.
-						IntVal) + " is listening")
-				}
-				if failcount == int(pod.Spec.Containers[0].LivenessProbe.FailureThreshold) {
-					fmt.Println("Terminating Pod, FailureThreshold Hit")
-					delete(p.probes, p.GetPodFullName(pod.Namespace, pod.Name))
-					p.DeletePod(ctx, pod)
-					pod.Status.Phase = instanceStateToPodPhase("failed")
-					break
-				}
-
-			}
-		}()
-	}
-
-	if pod.Spec.Containers[0].LivenessProbe.Handler.HTTPGet != nil {
-		fmt.Println("Running a HTTP Liveness Check")
-		go func() {
-			failcount := 0
-			time.Sleep(time.Duration(pod.Spec.Containers[0].LivenessProbe.InitialDelaySeconds) * time.Second)
-			for {
-				if !p.probes[fullname] {
-					break
-				}
-
-				time.Sleep(time.Duration(pod.Spec.Containers[0].LivenessProbe.PeriodSeconds) * time.Second)
-				fmt.Println(pod.Name + ": Running HTTP Check")
-				resp, err := http.Get(fmt.Sprintf("http://%s:%d%s", pod.Status.PodIP, pod.Spec.Containers[0].LivenessProbe.HTTPGet.Port.IntVal, pod.Spec.Containers[0].LivenessProbe.HTTPGet.Path))
-				if err != nil {
-					failcount++
-					fmt.Println(pod.Name + ": Shit is broken " + fmt.Sprint(failcount))
-				}
-				if pod.Spec.Containers[0].LivenessProbe.Handler.HTTPGet.HTTPHeaders != nil {
-					if resp != nil {
-						if resp.Header.Get(pod.Spec.Containers[0].LivenessProbe.HTTPGet.HTTPHeaders[0].Name) == pod.Spec.Containers[0].LivenessProbe.HTTPGet.HTTPHeaders[0].Value {
-							fmt.Println("Header Matches")
-						} else {
-							failcount++
-							fmt.Println("Header Doesn't Match")
-						}
-
-					}
-
-				} else {
-					failcount = 0
-					fmt.Println("HTTP Passed")
-				}
-				if failcount == int(pod.Spec.Containers[0].LivenessProbe.FailureThreshold) {
-					fmt.Println("Terminating Pod, FailureThreshold Hit")
-					delete(p.probes, p.GetPodFullName(pod.Namespace, pod.Name))
-					p.DeletePod(ctx, pod)
-					pod.Status.Phase = instanceStateToPodPhase("failed")
-					break
-				}
-			}
-		}()
-	}
-	return nil
 }
