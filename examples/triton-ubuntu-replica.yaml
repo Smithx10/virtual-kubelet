@@ -37,6 +37,7 @@ spec:
             port: 22
           initialDelaySeconds: 5
           periodSeconds: 5
+      restartPolicy: Always
       dnsPolicy: ClusterFirst
       nodeSelector:
         kubernetes.io/role: agent

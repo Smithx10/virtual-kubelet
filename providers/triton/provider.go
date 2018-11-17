@@ -18,6 +18,7 @@ import (
 	"github.com/joyent/triton-go/authentication"
 	"github.com/joyent/triton-go/compute"
 	"github.com/virtual-kubelet/virtual-kubelet/manager"
+	"github.com/y0ssar1an/q"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -45,10 +46,12 @@ func (p *TritonProvider) GetInstStatus(tp *TritonPod) {
 			if err != nil {
 				return
 			}
-			fmt.Println(c, err)
+			if c == nil {
+				fmt.Println("s")
+			}
 			//instanceToPod()
 			tp.statusLock.Lock()
-			tp.status.Phase = instanceStateToPodPhase("running")
+			//tp.status.Phase = instanceStateToPodPhase("running")
 			tp.statusLock.Unlock()
 			time.Sleep(5 * time.Second)
 		}
@@ -62,7 +65,7 @@ func (p *TritonProvider) RunReadiness(tp *TritonPod) {
 	// Perform Initial Readiness Delay
 	time.Sleep(time.Duration(r.InitialDelaySeconds) * time.Second)
 	// Set Failure Count.
-	failcount := 0
+	//failcount := 0
 	for {
 		select {
 		case <-tp.shutdownCtx.Done():
@@ -107,7 +110,8 @@ func (p *TritonProvider) RunLiveness(tp *TritonPod) {
 				if failcount == int(l.FailureThreshold) {
 					fmt.Println("FailureThreshold Hit.  Setting PodPhase to \"failed\"}")
 					tp.statusLock.Lock()
-					tp.status.Phase = instanceStateToPodPhase("failed")
+					//tp.status.Phase = instanceStateToPodPhase("failed")
+					tp.status.ContainerStatuses[0].State = instanceStateToContainerState("failed")
 					tp.statusLock.Unlock()
 					return
 				}
@@ -376,13 +380,13 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	}
 
 	fmt.Sprintf("Created: " + i.Name)
-
 	return nil
 }
 
 // UpdatePod takes a Kubernetes Pod and updates it within the provider.
 func (p *TritonProvider) UpdatePod(ctx context.Context, pod *corev1.Pod) error {
 	log.Printf("Received UpdatePod request for %s/%s.\n", pod.Namespace, pod.Name)
+	q.Q(pod)
 	return errNotImplemented
 }
 
@@ -465,10 +469,12 @@ func (p *TritonProvider) ExecInContainer(
 func (p *TritonProvider) GetPodStatus(ctx context.Context, namespace, name string) (*corev1.PodStatus, error) {
 	log.Printf("Received GetPodStatus request for %s/%s.\n", namespace, name)
 
+	fn := p.GetPodFullName(namespace, name)
+
 	//if (pod.Spec.Containers[0].LivenessProbe != nil || pod.Spec.Containers[0].ReadinessProbe != nil) && pod.Status.PodIP != "" {
 	//p.RunProbes(ctx, pod)
 	//}
-	return p.pods[p.GetPodFullName(namespace, name)].status, nil
+	return &p.pods[fn].pod.Status, nil
 }
 
 // GetPods retrieves a list of all pods running on the provider (can be cached).
@@ -632,7 +638,7 @@ func instanceToPod(i *compute.Instance) (*corev1.Pod, error) {
 		//Name string `json:"name" protobuf:"bytes,1,opt,name=name"`
 		Name: i.Name,
 		//State ContainerState `json:"state,omitempty" protobuf:"bytes,2,opt,name=state"`
-		State: instanceStateToContainerState(i),
+		State: instanceStateToContainerState(fmt.Sprint(i.State)),
 		//LastTerminationState ContainerState `json:"lastState,omitempty" protobuf:"bytes,3,opt,name=lastState"`
 		//Ready bool `json:"ready" protobuf:"varint,4,opt,name=ready"`
 		Ready: instanceStateToPodPhase(i.State) == corev1.PodRunning,
@@ -659,9 +665,10 @@ func instanceToPod(i *compute.Instance) (*corev1.Pod, error) {
 			CreationTimestamp: podCreationTimestamp,
 		},
 		Spec: corev1.PodSpec{
-			NodeName:   fmt.Sprint(i.Tags["NodeName"]),
-			Volumes:    []corev1.Volume{},
-			Containers: containers,
+			NodeName:      fmt.Sprint(i.Tags["NodeName"]),
+			Volumes:       []corev1.Volume{},
+			Containers:    containers,
+			RestartPolicy: "Always",
 		},
 		Status: corev1.PodStatus{
 			Phase:      instanceStateToPodPhase(i.State),
@@ -718,11 +725,11 @@ func instanceStateToPodConditions(state string, transitiontime metav1.Time) []co
 	return []corev1.PodCondition{}
 }
 
-func instanceStateToContainerState(i *compute.Instance) corev1.ContainerState {
+func instanceStateToContainerState(state string) corev1.ContainerState {
 	startTime := metav1.NewTime(time.Now())
 
 	// Handle the case where the container is running.
-	if i.State == "running" {
+	if state == "running" {
 		return corev1.ContainerState{
 			Running: &corev1.ContainerStateRunning{
 				StartedAt: startTime,
@@ -731,19 +738,18 @@ func instanceStateToContainerState(i *compute.Instance) corev1.ContainerState {
 	}
 
 	// Handle the case where the container failed.
-	if i.State == "failed" {
+	if state == "failed" {
 		return corev1.ContainerState{
 			Terminated: &corev1.ContainerStateTerminated{
 				ExitCode:   0,
-				Reason:     i.State,
-				Message:    i.State,
+				Reason:     state,
+				Message:    state,
 				StartedAt:  startTime,
 				FinishedAt: metav1.NewTime(time.Now()),
 			},
 		}
 	}
 
-	state := i.State
 	if state == "" {
 		state = "provisioning"
 	}
@@ -753,7 +759,7 @@ func instanceStateToContainerState(i *compute.Instance) corev1.ContainerState {
 	return corev1.ContainerState{
 		Waiting: &corev1.ContainerStateWaiting{
 			Reason:  state,
-			Message: i.State,
+			Message: state,
 		},
 	}
 }
