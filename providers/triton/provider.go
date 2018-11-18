@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	jd "github.com/josephburnett/jd/lib"
 	triton "github.com/joyent/triton-go"
 	"github.com/joyent/triton-go/authentication"
 	"github.com/joyent/triton-go/compute"
@@ -110,7 +111,7 @@ func (p *TritonProvider) RunLiveness(tp *TritonPod) {
 				if failcount == int(l.FailureThreshold) {
 					fmt.Println("FailureThreshold Hit.  Setting PodPhase to \"failed\"}")
 					tp.statusLock.Lock()
-					//tp.status.Phase = instanceStateToPodPhase("failed")
+					tp.status.Phase = instanceStateToPodPhase("failed")
 					tp.status.ContainerStatuses[0].State = instanceStateToContainerState("failed")
 					tp.statusLock.Unlock()
 					return
@@ -386,7 +387,6 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 // UpdatePod takes a Kubernetes Pod and updates it within the provider.
 func (p *TritonProvider) UpdatePod(ctx context.Context, pod *corev1.Pod) error {
 	log.Printf("Received UpdatePod request for %s/%s.\n", pod.Namespace, pod.Name)
-	q.Q(pod)
 	return errNotImplemented
 }
 
@@ -591,9 +591,9 @@ func (p *TritonProvider) OperatingSystem() string {
 func instanceToPod(i *compute.Instance) (*corev1.Pod, error) {
 
 	// Get Pod Spec from the Metadata
-	//bytes := []byte(fmt.Sprint(i.Tags["PodSpec"]))
-	//var podSpec *corev1.Pod
-	//json.Unmarshal(bytes, &podSpec)
+	bytes := []byte(fmt.Sprint(i.Tags["PodSpec"]))
+	var tps *corev1.Pod
+	json.Unmarshal(bytes, &tps)
 
 	// Take Care of time
 	var podCreationTimestamp metav1.Time
@@ -681,6 +681,12 @@ func instanceToPod(i *compute.Instance) (*corev1.Pod, error) {
 			ContainerStatuses: containerStatuses,
 		},
 	}
+
+	pod, _ := json.Marshal(p)
+	a, _ := jd.ReadJsonString(string(pod))
+	b, _ := jd.ReadJsonString(fmt.Sprint(i.Tags["PodSpec"]))
+
+	q.Q(a.Diff(b).Render())
 
 	return &p, nil
 }
