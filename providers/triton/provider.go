@@ -18,7 +18,6 @@ import (
 	"github.com/joyent/triton-go/authentication"
 	"github.com/joyent/triton-go/compute"
 	"github.com/virtual-kubelet/virtual-kubelet/manager"
-	"github.com/y0ssar1an/q"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -366,15 +365,20 @@ func (p *TritonProvider) Capacity(ctx context.Context) corev1.ResourceList {
 	}
 }
 
-// CreatePod takes a Kubernetes Pod and deploys it within the Triton provider.
-func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
-	log.Printf("Received CreatePod request for %+v.\n", pod)
-
+func (p *TritonProvider) NewTritonPod(ctx context.Context, pod *corev1.Pod) *TritonPod {
 	// Use Pod Namespace and Name for map key.
 	fn := p.GetPodFullName(pod.Namespace, pod.Name)
 
 	// Assign Probes to TritonPod Struct
 	tprobes := make(map[string]*corev1.Probe)
+
+	if pod.Spec.Containers[0].LivenessProbe != nil {
+		tprobes["liveness"] = pod.Spec.Containers[0].LivenessProbe
+	}
+
+	if pod.Spec.Containers[0].ReadinessProbe != nil {
+		tprobes["readiness"] = pod.Spec.Containers[0].ReadinessProbe
+	}
 
 	// Create the Context for Terminating the GoRoutines which will UpdateState and Phase,  and Run Probes
 	ctxTp, cancel := context.WithCancel(ctx)
@@ -386,7 +390,7 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	}
 
 	// Init the New Triton Pod Struct.
-	p.pods[fn] = &TritonPod{
+	tp := &TritonPod{
 		shutdownCtx: ctxTp,
 		shutdown:    cancel,
 		pod:         pod,
@@ -394,7 +398,34 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 		fn:          fn,
 		backoff:     backoff,
 	}
+	return tp
 
+}
+
+func (p *TritonProvider) RunTritonPodLoops(tp *TritonPod) {
+
+	// Kick Off Go Routine which Polls Triton every N seconds for instance status. (See triton.toml for Poll Rate). This Go Routine will update the Containers State, and Pod Phases.  DeletePodwill clean up this Routine.
+	go p.GetInstStatus(tp)
+
+	// Liveness
+	if tp.probes["liveness"] != nil {
+		go p.RunLiveness(tp)
+	}
+
+	// Readiness
+	if tp.probes["readiness"] != nil {
+		go p.RunReadiness(tp)
+	}
+
+}
+
+// CreatePod takes a Kubernetes Pod and deploys it within the Triton provider.
+func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
+	log.Printf("Received CreatePod request for %+v.\n", pod)
+
+	// Create New Triton Pod
+	tp := p.NewTritonPod(ctx, pod)
+	p.pods[tp.fn] = tp
 	// Marshal the Pod.Spec that was recieved from the Masters and write store it on the instance.  In the event that Virtual Kubelet Crashes we can rehydrate from the tag.
 	Pod, _ := json.Marshal(pod)
 
@@ -427,25 +458,13 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 			if err != nil {
 				return err
 			}
-			p.pods[fn].pod = converted
+			// Add PodSpec to TritonPod
+			tp.pod = converted
+			// Run the Routines
+			p.RunTritonPodLoops(tp)
 			break
 		}
 		time.Sleep(2 * time.Second)
-	}
-
-	// Kick Off Go Routine which Polls Triton every N seconds for instance status. (See triton.toml for Poll Rate). This Go Routine will update the Containers State, and Pod Phases.  DeletePodwill clean up this Routine.
-	go p.GetInstStatus(p.pods[fn])
-
-	// Liveness
-	if pod.Spec.Containers[0].LivenessProbe != nil {
-		tprobes["liveness"] = pod.Spec.Containers[0].LivenessProbe
-		go p.RunLiveness(p.pods[fn])
-	}
-
-	// Readiness
-	if pod.Spec.Containers[0].ReadinessProbe != nil {
-		tprobes["readiness"] = pod.Spec.Containers[0].ReadinessProbe
-		go p.RunReadiness(p.pods[fn])
 	}
 
 	fmt.Sprintf("Created: " + i.Name)
@@ -461,7 +480,7 @@ func (p *TritonProvider) UpdatePod(ctx context.Context, pod *corev1.Pod) error {
 // DeletePod takes a Kubernetes Pod and deletes it from the provider.
 func (p *TritonProvider) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 	log.Printf("Received DeletePod request for %s/%s.\n", pod.Namespace, pod.Name)
-	q.Q("Got a Delete", pod.Name)
+
 	fn := p.GetPodFullName(pod.Namespace, pod.Name)
 
 	c, err := p.client.Compute()
@@ -478,6 +497,8 @@ func (p *TritonProvider) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 		}
 		time.Sleep(3 * time.Second)
 	}
+
+	//p.pods[fn].shutdown()
 
 	return nil
 }
@@ -518,29 +539,45 @@ func (p *TritonProvider) ExecInContainer(
 func (p *TritonProvider) GetPodStatus(ctx context.Context, namespace, name string) (*corev1.PodStatus, error) {
 	log.Printf("Received GetPodStatus request for %s/%s.\n", namespace, name)
 
-	fn := p.GetPodFullName(namespace, name)
+	//fn := p.GetPodFullName(namespace, name)
 
-	return &p.pods[fn].pod.Status, nil
+	return nil, nil
 }
 
 // GetPods retrieves a list of all pods running on the provider (can be cached).
 func (p *TritonProvider) GetPods(ctx context.Context) ([]*corev1.Pod, error) {
 	log.Println("Received GetPods request.")
 
-	c, _ := p.client.Compute()
-	is, _ := c.Instances().List(ctx, &compute.ListInstancesInput{})
-
-	pods := make([]*corev1.Pod, 0, len(is))
-	for _, i := range is {
-		if i.Tags["NodeName"] == p.nodeName {
-			// Get CreatePod Spec from the Metadata
-			bytes := []byte(fmt.Sprint(i.Tags["Pod"]))
-			var tps *corev1.Pod
-			json.Unmarshal(bytes, &tps)
-			pods = append(pods, tps)
-		}
+	c, err := p.client.Compute()
+	if err != nil {
+		return nil, err
+	}
+	is, err := c.Instances().List(ctx, &compute.ListInstancesInput{
+		Tags: map[string]interface{}{
+			"NodeName": p.nodeName,
+		},
+	})
+	if err != nil {
+		return nil, err
 	}
 
+	// Create Pods Array
+	pods := make([]*corev1.Pod, 0, len(is))
+	for _, i := range is {
+		converted, err := instanceToPod(i)
+		if err != nil {
+			return nil, err
+		}
+		// New Triton Pod
+		tp := p.NewTritonPod(ctx, converted)
+		p.pods[tp.fn] = tp
+		// Put Converted Pod Back on Struct
+		p.pods[tp.fn].pod = converted
+		// Create Return for GetPods
+		pods = append(pods, tp.pod)
+		// Run Loops
+		p.RunTritonPodLoops(tp)
+	}
 	return pods, nil
 }
 
