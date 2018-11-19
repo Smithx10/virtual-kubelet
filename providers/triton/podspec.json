@@ -1,0 +1,19 @@
+{ObjectMeta:k8s_io_apimachinery_pkg_apis_meta_v1.ObjectMeta{Name:nginx,GenerateName:,Namespace:default,SelfLink:/api/v1/namespaces/default/pods/nginx,UID:462517f3-e5e0-11e8-8
+975-080027db4ee8,ResourceVersion:121891,Generation:0,CreationTimestamp:2018-11-11 13:33:24 -0500 EST,DeletionTimestamp:<nil>,DeletionGracePeriodSeconds:nil,Labels:map[string]stri
+ng{},Annotations:map[string]string{kubectl.kubernetes.io/last-applied-configuration: {"apiVersion":"v1","kind":"Pod","metadata":{"annotations":{},"name":"nginx","namespace":"defa
+ult"},"spec":{"containers":[{"image":"nginx","imagePullPolicy":"Always","name":"nginx","ports":[{"containerPort":80,"name":"http","protocol":"TCP"},{"containerPort":443,"name":"h
+ttps"}],"resources":{"limits":{"cpu":"200m","memory":"256Mi"},"requests":{"cpu":"100m","memory":"128Mi"}}}],"dnsPolicy":"ClusterFirst","nodeSelector":{"beta.kubernetes.io/os":"li
+nux","kubernetes.io/role":"agent","type":"virtual-kubelet"},"tolerations":[{"key":"virtual-kubelet.io/provider","operator":"Exists"},{"effect":"NoSchedule","key":"azure.com/aci"}
+]}}
+,},OwnerReferences:[],Finalizers:[],ClusterName:,Initializers:nil,},Spec:PodSpec{Volumes:[{default-token-2vlwh {nil nil nil nil nil SecretVolumeSource{SecretName:default-token-2v
+lwh,Items:[],DefaultMode:*420,Optional:nil,} nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil nil}}],Containers:[{nginx nginx [] []  [{http 0 80 TC
+P } {https 0 443 TCP }] [] [] {map[cpu:{{200 -3} {<nil>} 200m DecimalSI} memory:{{268435456 0} {<nil>}  BinarySI}] map[cpu:{{100 -3} {<nil>} 100m DecimalSI} memory:{{134217728 0}
+ {<nil>}  BinarySI}]} [{default-token-2vlwh true /var/run/secrets/kubernetes.io/serviceaccount  <nil>}] [] nil nil nil /dev/termination-log File Always nil false false false}],Re
+startPolicy:Always,TerminationGracePeriodSeconds:*30,ActiveDeadlineSeconds:nil,DNSPolicy:ClusterFirst,NodeSelector:map[string]string{beta.kubernetes.io/os: linux,kubernetes.io/ro
+le: agent,type: virtual-kubelet,},ServiceAccountName:default,DeprecatedServiceAccount:default,NodeName:virtual-kubelet,HostNetwork:false,HostPID:false,HostIPC:false,SecurityConte
+xt:&PodSecurityContext{SELinuxOptions:nil,RunAsUser:nil,RunAsNonRoot:nil,SupplementalGroups:[],FSGroup:nil,RunAsGroup:nil,Sysctls:[],},ImagePullSecrets:[],Hostname:,Subdomain:,Af
+finity:nil,SchedulerName:default-scheduler,InitContainers:[],AutomountServiceAccountToken:nil,Tolerations:[{virtual-kubelet.io/provider Exists   <nil>} {azure.com/aci   NoSchedul
+e <nil>} {node.kubernetes.io/not-ready Exists  NoExecute 0xc0007bc320} {node.kubernetes.io/unreachable Exists  NoExecute 0xc0007bc340}],HostAliases:[],PriorityClassName:,Priority
+:nil,DNSConfig:nil,ShareProcessNamespace:nil,ReadinessGates:[],RuntimeClassName:nil,EnableServiceLinks:nil,},Status:PodStatus{Phase:Pending,Conditions:[{PodScheduled True 0001-01
+-01 00:00:00 +0000 UTC 2018-11-11 13:33:24 -0500 EST  }],Message:,Reason:,HostIP:,PodIP:,StartTime:<nil>,ContainerStatuses:[],QOSClass:Burstable,InitContainerStatuses:[],Nominate
+dNodeName:,},}

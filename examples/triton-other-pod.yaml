@@ -1,12 +1,13 @@
 apiVersion: v1
 kind: Pod
 metadata:
-  name: nginx
+  name: triton-other-test
+  labels:
+    package: sample-1G
 spec:
   containers:
-  - image: nginx
-    imagePullPolicy: Always
-    name: nginx
+  - image: 7b5981c4-1889-11e7-b4c5-3f3bdfc9b88b
+    name: triton-other-test
     resources:
       requests:
         memory: "128Mi"
@@ -20,6 +21,17 @@ spec:
       protocol: TCP
     - containerPort: 443
       name: https
+    livenessProbe:
+      httpGet:
+        path: /
+        port: 8080
+        httpHeaders:
+        - name: X-Custom-Header
+          value: Awesome
+      #tcpSocket:
+        #port: 22
+      initialDelaySeconds: 2
+      periodSeconds: 2
   dnsPolicy: ClusterFirst
   nodeSelector:
     kubernetes.io/role: agent
@@ -28,5 +40,3 @@ spec:
   tolerations:
   - key: virtual-kubelet.io/provider
     operator: Exists
-  - key: azure.com/aci
-    effect: NoSchedule

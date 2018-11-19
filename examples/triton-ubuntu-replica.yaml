@@ -1,0 +1,97 @@
+apiVersion: extensions/v1beta1
+kind: ReplicaSet
+metadata:
+  name: k8s-pod-0
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      tier: frontend
+    matchExpressions:
+      - {key: tier, operator: In, values: [frontend]}
+  template:
+    metadata:
+      labels:
+        package: sample-1G
+        app: guestbook
+        tier: frontend
+    spec:
+      containers:
+      - image: 7b5981c4-1889-11e7-b4c5-3f3bdfc9b88b
+        name: k8s-cntr-0
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+        ports:
+        - containerPort: 80
+          name: http
+          protocol: TCP
+        - containerPort: 443
+          name: https
+        livenessProbe:
+          tcpSocket:
+            port: 22
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      restartPolicy: Always
+      dnsPolicy: ClusterFirst
+      nodeSelector:
+        kubernetes.io/role: agent
+        beta.kubernetes.io/os: linux
+        type: virtual-kubelet
+      tolerations:
+      - key: virtual-kubelet.io/provider
+        operator: Exists
+#---
+#apiVersion: extensions/v1beta1
+#kind: ReplicaSet
+#metadata:
+  #name: k8s-pod-1
+#spec:
+  #replicas: 1
+  #selector:
+    #matchLabels:
+      #tier: backend
+    #matchExpressions:
+      #- {key: tier, operator: In, values: [backend]}
+  #template:
+    #metadata:
+      #labels:
+        #package: sample-1G
+        #app: guestbook
+        #tier: backend 
+    #spec:
+      #containers:
+      #- image: 7b5981c4-1889-11e7-b4c5-3f3bdfc9b88b
+        #name: k8s-contr-1
+        #resources:
+          #requests:
+            #memory: "128Mi"
+            #cpu: "100m"
+          #limits:
+            #memory: "256Mi"
+            #cpu: "200m"
+        #ports:
+        #- containerPort: 80
+          #name: http
+          #protocol: TCP
+        #- containerPort: 443
+          #name: https
+        #livenessProbe:
+          #tcpSocket:
+            #port: 22
+          #initialDelaySeconds: 5
+          #periodSeconds: 5
+      #restartPolicy: Always
+      #dnsPolicy: ClusterFirst
+      #nodeSelector:
+        #kubernetes.io/role: agent
+        #beta.kubernetes.io/os: linux
+        #type: virtual-kubelet
+      #tolerations:
+      #- key: virtual-kubelet.io/provider
+        #operator: Exists

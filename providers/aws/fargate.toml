@@ -6,7 +6,7 @@
 #
 
 # AWS region where Fargate resources are provisioned. Mandatory.
-Region = "us-east-1"
+Region = "us-east-2"
 
 # AWS Fargate cluster name. Optional. Defaults to "default".
 # If a cluster with this name does not exist in the region, virtual-kubelet will create it.
@@ -14,17 +14,17 @@ Region = "us-east-1"
 ClusterName = "default"
 
 # List of subnets that pod ENIs are connected to. Mandatory.
-Subnets = ["subnet-12345678"]
+Subnets = ["subnet-fb80a293"]
 
 # List of security groups associated with pod ENIs. Optional.
 # If omitted, pod ENIs inherit their VPC's default security group.
-SecurityGroups = ["sg-12345678"]
+#SecurityGroups = ["sg-12345678"]
 
 # Whether pod ENIs are assigned a public IPv4 address. Optional. Defaults to false.
 # If your pod requires internet access (e.g. to download container images from ECR or Docker Hub),
 # this should be set to "true" for pods on public subnets with internet gateways,
 # and to "false" for pods on private subnets with NAT gateways.
-AssignPublicIPv4Address = false
+AssignPublicIPv4Address = true
 
 # Role assumed by AWS Fargate to execute your pod. Optional.
 # https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task_execution_IAM_role.html

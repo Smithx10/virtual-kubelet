@@ -1,0 +1,22 @@
+#
+# Example configuration file for Triton virtual-kubelet provider.
+#
+# Usage:
+# virtual-kubelet --provider triton --provider-config triton.toml
+#
+
+# Triton region where Triton resources are provisioned. Mandatory.
+Region = "us-east-1"
+
+# Triton platform version. Optional. Defaults to "LATEST".
+PlatformVersion = "LATEST"
+
+# Operating system for pods. Optional. Defaults to "Linux".
+OperatingSystem = "Linux"
+
+# Triton capacity advertised by virtual-kubelet. Optional. Defaults to the values below.
+# Capacity is specified using Kubernetes resource format.
+# https://kubernetes.io/docs/concepts/configuration/manage-compute-resources-container/
+CPU = "20"
+Memory = "40Gi"
+Pods = "20"
