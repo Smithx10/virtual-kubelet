@@ -61,7 +61,7 @@ func (p *TritonProvider) GetInstStatus(tp *TritonPod) {
 			//instanceToPod()
 			tp.statusLock.Lock()
 			// Handle Pod Phase
-			//tp.pod.Status.Phase = instanceStateToPodPhase(i.State)
+			tp.pod.Status.Phase = instanceStateToPodPhase(i.State)
 			// Handle The Container Level State
 			tp.pod.Status.ContainerStatuses[0].State = instanceStateToContainerState(i.State)
 			tp.pod.Status.ContainerStatuses[0].Ready = instanceStateToPodPhase(i.State) == corev1.PodRunning
@@ -89,6 +89,8 @@ func (p *TritonProvider) RestartInstance(tp *TritonPod) {
 			tp.backoff.end = tp.backoff.start.Add(tp.backoff.max)
 		}
 
+		// Explcitly Mark the Instance Not Ready.
+		tp.pod.Status.ContainerStatuses[0].Ready = false
 		// Restart the Instance
 		c.Instances().Reboot(tp.shutdownCtx, &compute.RebootInstanceInput{InstanceID: tp.pod.Annotations["t_uuid"]})
 
@@ -539,9 +541,9 @@ func (p *TritonProvider) ExecInContainer(
 func (p *TritonProvider) GetPodStatus(ctx context.Context, namespace, name string) (*corev1.PodStatus, error) {
 	log.Printf("Received GetPodStatus request for %s/%s.\n", namespace, name)
 
-	//fn := p.GetPodFullName(namespace, name)
+	fn := p.GetPodFullName(namespace, name)
 
-	return nil, nil
+	return &p.pods[fn].pod.Status, nil
 }
 
 // GetPods retrieves a list of all pods running on the provider (can be cached).
@@ -801,7 +803,7 @@ func instanceStateToPodPhase(state string) corev1.PodPhase {
 
 func instanceStateToPodConditions(state string, transitiontime metav1.Time) []corev1.PodCondition {
 	switch state {
-	case "Running":
+	case "running":
 		return []corev1.PodCondition{
 			corev1.PodCondition{
 				Type:               corev1.PodReady,
