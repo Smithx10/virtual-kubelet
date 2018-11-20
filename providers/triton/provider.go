@@ -95,8 +95,7 @@ func (p *TritonProvider) RestartInstance(tp *TritonPod) {
 		tp.pod.Status.ContainerStatuses[0].Ready = false
 
 		// Try and Start the instance
-		err := c.Instances().Start(tp.shutdownCtx, &compute.StartInstanceInput{InstanceID: tp.pod.Annotations["t_uuid"]})
-		q.Q(err)
+		c.Instances().Start(tp.shutdownCtx, &compute.StartInstanceInput{InstanceID: tp.pod.Annotations["t_uuid"]})
 
 		// Restart the Instance
 		c.Instances().Reboot(tp.shutdownCtx, &compute.RebootInstanceInput{InstanceID: tp.pod.Annotations["t_uuid"]})
@@ -454,17 +453,20 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 		},
 	})
 	if err != nil {
+		q.Q(err)
 		return err
 	}
 	// Block Until Triton Creates an Instance and Cache first instToPod on the TritonPod.Pod Struct
 	for {
 		running, err := c.Instances().Get(ctx, &compute.GetInstanceInput{ID: i.ID})
 		if err != nil {
+			q.Q(err)
 			return err
 		}
 		if running.PrimaryIP != "" && running.Tags["Pod"] != nil {
 			converted, err := instanceToPod(running)
 			if err != nil {
+				q.Q(err)
 				return err
 			}
 			// Add PodSpec to TritonPod
@@ -549,6 +551,11 @@ func (p *TritonProvider) GetPodStatus(ctx context.Context, namespace, name strin
 	log.Printf("Received GetPodStatus request for %s/%s.\n", namespace, name)
 
 	fn := p.GetPodFullName(namespace, name)
+	if p.pods[fn] == nil {
+		fmt.Sprintf("Pod Missing: %s, Returning Nil.  If the Pod Exists we will catch it on the next GetPodStatus", fn)
+		q.Q(fn)
+		return nil, nil
+	}
 
 	return &p.pods[fn].pod.Status, nil
 }
