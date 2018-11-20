@@ -18,6 +18,7 @@ import (
 	"github.com/joyent/triton-go/authentication"
 	"github.com/joyent/triton-go/compute"
 	"github.com/virtual-kubelet/virtual-kubelet/manager"
+	"github.com/y0ssar1an/q"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -35,6 +36,7 @@ type TritonPod struct {
 	backoff     *Backoff
 }
 
+// Replace with
 type Backoff struct {
 	max       time.Duration
 	delay     int
@@ -91,6 +93,11 @@ func (p *TritonProvider) RestartInstance(tp *TritonPod) {
 
 		// Explcitly Mark the Instance Not Ready.
 		tp.pod.Status.ContainerStatuses[0].Ready = false
+
+		// Try and Start the instance
+		err := c.Instances().Start(tp.shutdownCtx, &compute.StartInstanceInput{InstanceID: tp.pod.Annotations["t_uuid"]})
+		q.Q(err)
+
 		// Restart the Instance
 		c.Instances().Reboot(tp.shutdownCtx, &compute.RebootInstanceInput{InstanceID: tp.pod.Annotations["t_uuid"]})
 
@@ -794,7 +801,7 @@ func instanceStateToPodPhase(state string) corev1.PodPhase {
 	case "deleted":
 		return corev1.PodFailed
 	case "stopped":
-		return corev1.PodFailed
+		return corev1.PodPending
 	case "stopping":
 		return corev1.PodPending
 	}
