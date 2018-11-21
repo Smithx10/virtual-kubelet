@@ -18,7 +18,6 @@ import (
 	"github.com/joyent/triton-go/authentication"
 	"github.com/joyent/triton-go/compute"
 	"github.com/virtual-kubelet/virtual-kubelet/manager"
-	"github.com/y0ssar1an/q"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -83,6 +82,7 @@ func (p *TritonProvider) RestartInstance(tp *TritonPod) {
 	}
 
 	if tp.pod.Spec.RestartPolicy != "Never" {
+		tp.pod.Status.Phase = instanceStateToPodPhase("failed")
 		// Reset the Window if we've passed it without having to fire a restart
 		// Set the Window
 		if (tp.backoff.start == time.Time{}) {
@@ -453,20 +453,17 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 		},
 	})
 	if err != nil {
-		q.Q(err)
 		return err
 	}
 	// Block Until Triton Creates an Instance and Cache first instToPod on the TritonPod.Pod Struct
 	for {
 		running, err := c.Instances().Get(ctx, &compute.GetInstanceInput{ID: i.ID})
 		if err != nil {
-			q.Q(err)
 			return err
 		}
 		if running.PrimaryIP != "" && running.Tags["Pod"] != nil {
 			converted, err := instanceToPod(running)
 			if err != nil {
-				q.Q(err)
 				return err
 			}
 			// Add PodSpec to TritonPod
@@ -553,7 +550,6 @@ func (p *TritonProvider) GetPodStatus(ctx context.Context, namespace, name strin
 	fn := p.GetPodFullName(namespace, name)
 	if p.pods[fn] == nil {
 		fmt.Sprintf("Pod Missing: %s, Returning Nil.  If the Pod Exists we will catch it on the next GetPodStatus", fn)
-		q.Q(fn)
 		return nil, nil
 	}
 

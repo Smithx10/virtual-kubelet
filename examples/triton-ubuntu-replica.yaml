@@ -16,6 +16,7 @@ spec:
         app: guestbook
         tier: frontend
     spec:
+      restartPolicy: Always
       containers:
       - image: 7b5981c4-1889-11e7-b4c5-3f3bdfc9b88b
         name: k8s-cntr-0
@@ -37,7 +38,6 @@ spec:
             port: 22
           initialDelaySeconds: 5
           periodSeconds: 5
-      restartPolicy: Always
       dnsPolicy: ClusterFirst
       nodeSelector:
         kubernetes.io/role: agent
