@@ -412,7 +412,7 @@ func (p *TritonProvider) NewTritonPod(ctx context.Context, pod *corev1.Pod) *Tri
 
 func (p *TritonProvider) RunTritonPodLoops(tp *TritonPod) {
 
-	// Kick Off Go Routine which Polls Triton every N seconds for instance status. (See triton.toml for Poll Rate). This Go Routine will update the Containers State, and Pod Phases.  DeletePodwill clean up this Routine.
+	// Kick Off Go Routine which Polls Triton every N seconds for instance status. (See triton.toml for Poll Rate). This Go Routine will update the Containers State, and Pod Phases.  DeletePod will clean up this Routine.
 	go p.GetInstStatus(tp)
 
 	// Liveness
@@ -437,6 +437,23 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	// Marshal the Pod.Spec that was recieved from the Masters and write store it on the instance.  In the event that Virtual Kubelet Crashes we can rehydrate from the tag.
 	Pod, _ := json.Marshal(pod)
 
+	// Grab env and stick it in user_data
+	key_values := make(map[string]string)
+
+	if pod.Spec.Containers[0].Env != nil {
+		for _, v := range pod.Spec.Containers[0].Env {
+			key_values[v.Name] = v.Value
+		}
+	}
+
+	var env_vars string
+	if len(key_values) == 0 {
+		env_vars = "\"unset\""
+	} else {
+		environment, _ := json.Marshal(key_values)
+		env_vars = string(environment)
+	}
+
 	//  Reach out to Triton to create an Instance
 	c, err := p.client.Compute()
 	i, err := c.Instances().Create(ctx, &compute.CreateInstanceInput{
@@ -450,6 +467,9 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 			"UID":               string(pod.UID),
 			"CreationTimestamp": pod.CreationTimestamp.String(),
 			"Pod":               string(Pod),
+		},
+		Metadata: map[string]string{
+			"user_data": "{\"env\": " + env_vars + "}",
 		},
 	})
 	if err != nil {

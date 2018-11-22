@@ -20,25 +20,16 @@ spec:
       containers:
       - image: 7b5981c4-1889-11e7-b4c5-3f3bdfc9b88b
         name: k8s-cntr-0
-        resources:
-          requests:
-            memory: "128Mi"
-            cpu: "100m"
-          limits:
-            memory: "256Mi"
-            cpu: "200m"
-        ports:
-        - containerPort: 80
-          name: http
-          protocol: TCP
-        - containerPort: 443
-          name: https
+        #env:
+          #- name: CONTAINERPILOT
+            #value: "/etc/containerpilot.json5"
+          #- name: CONSUL_AGENT 
+            #value: "1"
         livenessProbe:
           tcpSocket:
             port: 22
           initialDelaySeconds: 5
           periodSeconds: 5
-      dnsPolicy: ClusterFirst
       nodeSelector:
         kubernetes.io/role: agent
         beta.kubernetes.io/os: linux
