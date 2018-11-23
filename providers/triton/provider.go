@@ -2,6 +2,7 @@ package triton
 
 import (
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -82,7 +84,6 @@ func (p *TritonProvider) RestartInstance(tp *TritonPod) {
 	}
 
 	if tp.pod.Spec.RestartPolicy != "Never" {
-		tp.pod.Status.Phase = instanceStateToPodPhase("failed")
 		// Reset the Window if we've passed it without having to fire a restart
 		// Set the Window
 		if (tp.backoff.start == time.Time{}) {
@@ -438,39 +439,80 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	Pod, _ := json.Marshal(pod)
 
 	// Grab env and stick it in user_data
+	var env_vars string
 	key_values := make(map[string]string)
 
 	if pod.Spec.Containers[0].Env != nil {
 		for _, v := range pod.Spec.Containers[0].Env {
 			key_values[v.Name] = v.Value
 		}
-	}
-
-	var env_vars string
-	if len(key_values) == 0 {
-		env_vars = "\"unset\""
-	} else {
 		environment, _ := json.Marshal(key_values)
 		env_vars = string(environment)
+	} else {
+		env_vars = "\"unset\""
+	}
+
+	// Build Metadata
+	metadata := make(map[string]string)
+	metadata["user-data"] = "{\"env_vars\": " + env_vars + "}"
+
+	// Build Tags
+	tags := make(map[string]string)
+	if pod.ObjectMeta.Labels != nil {
+		for k, v := range pod.ObjectMeta.Labels {
+			tags[k] = v
+		}
+	}
+	// Build Tags: Add *corev1.Pod to Pod
+	tags["Pod"] = string(Pod)
+
+	// Build Networks
+	/*
+		Kuberentes doesn't let you actually specifiy "Networks" in the PodSpec  Instead we will, sigh... have to use Annotations.
+		https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.12/#container-v1-core
+		Use network names for now since Labels has a 63 char limit.  "./facepalm"
+	*/
+	var networks []string
+	if pod.ObjectMeta.Annotations["networks"] != "" {
+		r := csv.NewReader(strings.NewReader(pod.ObjectMeta.Annotations["networks"]))
+		for {
+			record, err := r.Read()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				log.Fatal(err)
+			}
+			networks = record
+		}
+	}
+
+	// Build Affinity
+	var affinity []string
+	if pod.ObjectMeta.Annotations["affinity"] != "" {
+		r := csv.NewReader(strings.NewReader(pod.ObjectMeta.Annotations["affinity"]))
+		for {
+			record, err := r.Read()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				log.Fatal(err)
+			}
+			affinity = record
+		}
 	}
 
 	//  Reach out to Triton to create an Instance
 	c, err := p.client.Compute()
 	i, err := c.Instances().Create(ctx, &compute.CreateInstanceInput{
-		Image:   pod.Spec.Containers[0].Image,
-		Package: pod.ObjectMeta.Labels["package"],
-		Name:    pod.Name,
-		Tags: map[string]string{
-			"PodName":           pod.Name,
-			"NodeName":          pod.Spec.NodeName,
-			"Namespace":         pod.Namespace,
-			"UID":               string(pod.UID),
-			"CreationTimestamp": pod.CreationTimestamp.String(),
-			"Pod":               string(Pod),
-		},
-		Metadata: map[string]string{
-			"user_data": "{\"env\": " + env_vars + "}",
-		},
+		Image:    pod.Spec.Containers[0].Image,
+		Package:  pod.ObjectMeta.Annotations["package"],
+		Name:     pod.Name,
+		Tags:     tags,
+		Networks: networks,
+		Metadata: metadata,
+		Affinity: affinity,
 	})
 	if err != nil {
 		return err
@@ -525,8 +567,6 @@ func (p *TritonProvider) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 		}
 		time.Sleep(3 * time.Second)
 	}
-
-	//p.pods[fn].shutdown()
 
 	return nil
 }
