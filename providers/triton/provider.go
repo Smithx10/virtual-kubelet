@@ -5,10 +5,12 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
 	"log"
+	"math/rand"
 	"net"
 	"net/http"
 	"os"
@@ -19,6 +21,7 @@ import (
 	triton "github.com/joyent/triton-go"
 	"github.com/joyent/triton-go/authentication"
 	"github.com/joyent/triton-go/compute"
+	"github.com/joyent/triton-go/network"
 	"github.com/virtual-kubelet/virtual-kubelet/manager"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -432,7 +435,6 @@ func (p *TritonProvider) RunTritonPodLoops(tp *TritonPod) {
 func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	log.Printf("Received CreatePod request for %+v.\n", pod)
 
-	// Create New Triton Pod
 	tp := p.NewTritonPod(ctx, pod)
 	p.pods[tp.fn] = tp
 	// Marshal the Pod.Spec that was recieved from the Masters and write store it on the instance.  In the event that Virtual Kubelet Crashes we can rehydrate from the tag.
@@ -464,14 +466,17 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 		}
 	}
 	// Build Tags: Add *corev1.Pod to Pod
+	tags["k8s_namespace"] = pod.Namespace
+	tags["k8s_nodename"] = p.nodeName
+	tags["k8s_uid"] = string(pod.UID)
 	tags["Pod"] = string(Pod)
 
+	// Build Tags: firewall group
+	if pod.ObjectMeta.Annotations["fwgroup"] != "" {
+		tags["k8s_"+pod.ObjectMeta.Annotations["fwgroup"]] = "true"
+	}
+
 	// Build Networks
-	/*
-		Kuberentes doesn't let you actually specifiy "Networks" in the PodSpec  Instead we will, sigh... have to use Annotations.
-		https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.12/#container-v1-core
-		Use network names for now since Labels has a 63 char limit.  "./facepalm"
-	*/
 	var networks []string
 	if pod.ObjectMeta.Annotations["networks"] != "" {
 		r := csv.NewReader(strings.NewReader(pod.ObjectMeta.Annotations["networks"]))
@@ -505,6 +510,9 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 
 	//  Reach out to Triton to create an Instance
 	c, err := p.client.Compute()
+	if err != nil {
+		return err
+	}
 	i, err := c.Instances().Create(ctx, &compute.CreateInstanceInput{
 		Image:    pod.Spec.Containers[0].Image,
 		Package:  pod.ObjectMeta.Annotations["package"],
@@ -517,13 +525,83 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	if err != nil {
 		return err
 	}
+
+	// Apply Firewall Rules for Ports Specified
+	for _, v := range pod.Spec.Containers[0].Ports {
+		if v.Name == "" {
+			v.Name = "unset"
+		}
+		if v.Protocol == "" {
+			v.Protocol = "TCP"
+		}
+		// Create Client and Do work.
+		n, err := p.client.Network()
+		if err != nil {
+			return err
+		}
+		_, err = n.Firewall().CreateRule(ctx, &network.CreateRuleInput{
+			Rule:        fmt.Sprintf("FROM any TO vm %s ALLOW %s PORT %d", i.ID, strings.ToLower(string(v.Protocol)), v.ContainerPort),
+			Enabled:     true,
+			Description: fmt.Sprintf("Set by K8S for service: %s", string(v.Name)),
+		})
+	}
+
+	// If first Pod in the fwgroup, Create the NameSpace Firewall Rules
+	if pod.ObjectMeta.Annotations["fwgroup"] != "" {
+		fwgroup := pod.ObjectMeta.Annotations["fwgroup"]
+		n, err := p.client.Network()
+		if err != nil {
+			return err
+		}
+		var tcpRuleExist bool
+		var udpRuleExist bool
+		rules, err := n.Firewall().ListRules(ctx, &network.ListRulesInput{})
+		for _, v := range rules {
+			if v.Rule == fmt.Sprintf("FROM tag \"k8s_"+fwgroup+"\" TO tag \"k8s_"+fwgroup+"\" ALLOW tcp PORT all") {
+				tcpRuleExist = true
+			}
+			if v.Rule == fmt.Sprintf("FROM tag \"k8s_"+fwgroup+"\" TO tag \"k8s_"+fwgroup+"\" ALLOW udp PORT all") {
+				udpRuleExist = true
+			}
+		}
+
+		if tcpRuleExist != true {
+			// TCP
+			_, err = n.Firewall().CreateRule(ctx, &network.CreateRuleInput{
+				Rule:        fmt.Sprintf("FROM tag k8s_" + fwgroup + " TO tag k8s_" + fwgroup + " ALLOW tcp PORT all"),
+				Enabled:     true,
+				Description: fmt.Sprintf("Set by K8S for Pods in the FW Zone: k8s_", fwgroup),
+			})
+			if err != nil {
+				return err
+			}
+		}
+		if udpRuleExist != true {
+			// UDP
+			_, err = n.Firewall().CreateRule(ctx, &network.CreateRuleInput{
+				Rule:        fmt.Sprintf("FROM tag k8s_" + fwgroup + " TO tag k8s_" + fwgroup + " ALLOW udp PORT all"),
+				Enabled:     true,
+				Description: fmt.Sprintf("Set by K8S for Pods in the FW Zone: k8s_", fwgroup),
+			})
+			if err != nil {
+				return err
+			}
+		}
+	}
+
 	// Block Until Triton Creates an Instance and Cache first instToPod on the TritonPod.Pod Struct
 	for {
 		running, err := c.Instances().Get(ctx, &compute.GetInstanceInput{ID: i.ID})
 		if err != nil {
 			return err
 		}
-		if running.PrimaryIP != "" && running.Tags["Pod"] != nil {
+
+		if running.State == "failed" {
+			return errors.New("Provisioning failed")
+		}
+
+		if running.State == "running" {
+
 			converted, err := instanceToPod(running)
 			if err != nil {
 				return err
@@ -553,6 +631,14 @@ func (p *TritonProvider) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 
 	fn := p.GetPodFullName(pod.Namespace, pod.Name)
 
+	// Wait for t_uuid to be present
+	for {
+		if p.pods[fn].pod.Annotations["t_uuid"] != "" {
+			break
+		}
+		time.Sleep(1 * time.Second)
+	}
+
 	c, err := p.client.Compute()
 	if err != nil {
 		return err
@@ -560,13 +646,44 @@ func (p *TritonProvider) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 
 	p.pods[fn].shutdown()
 
+	// Delete Instance
 	for {
-		err := c.Instances().Delete(ctx, &compute.DeleteInstanceInput{ID: p.pods[fn].pod.Annotations["t_uuid"]})
+		_, err := c.Instances().Get(ctx, &compute.GetInstanceInput{ID: p.pods[fn].pod.Annotations["t_uuid"]})
+		if err != nil {
+			break
+		}
+
+		err = c.Instances().Delete(ctx, &compute.DeleteInstanceInput{ID: p.pods[fn].pod.Annotations["t_uuid"]})
 		if err == nil {
 			break
 		}
-		time.Sleep(3 * time.Second)
+		time.Sleep(2 * time.Second)
 	}
+
+	// Delete FW Rules
+	n, err := p.client.Network()
+	if err != nil {
+		return err
+	}
+
+	//Get fw rules from the Instance
+	rules, err := n.Firewall().ListMachineRules(ctx, &network.ListMachineRulesInput{MachineID: p.pods[fn].pod.Annotations["t_uuid"]})
+	if err != nil {
+		return err
+	}
+
+	// Iterate over and delete them
+	for _, v := range rules {
+		time.Sleep(time.Duration(rand.Intn(3)) * time.Second)
+		machines, err := n.Firewall().ListRuleMachines(ctx, &network.ListRuleMachinesInput{ID: v.ID})
+		if err != nil {
+			fmt.Println(err)
+		}
+		if len(machines) == 1 || len(machines) == 0 || machines == nil {
+			n.Firewall().DeleteRule(ctx, &network.DeleteRuleInput{ID: v.ID})
+		}
+	}
+	delete(p.pods, fn)
 
 	return nil
 }
@@ -626,7 +743,7 @@ func (p *TritonProvider) GetPods(ctx context.Context) ([]*corev1.Pod, error) {
 	}
 	is, err := c.Instances().List(ctx, &compute.ListInstancesInput{
 		Tags: map[string]interface{}{
-			"NodeName": p.nodeName,
+			"k8s_nodename": p.nodeName,
 		},
 	})
 	if err != nil {
@@ -754,6 +871,7 @@ func instanceToPod(i *compute.Instance) (*corev1.Pod, error) {
 
 	// Create Map for Storing Triton info in Pod Struct
 	tpsAnnotations := make(map[string]string)
+	tpsAnnotations = tps.Annotations
 	tpsAnnotations["t_uuid"] = i.ID
 
 	// Take Care of time
@@ -821,8 +939,8 @@ func instanceToPod(i *compute.Instance) (*corev1.Pod, error) {
 		},
 		ObjectMeta: metav1.ObjectMeta{
 			Name:              i.Name,
-			Namespace:         fmt.Sprint(i.Tags["Namespace"]),
-			UID:               types.UID(fmt.Sprint(i.Tags["UID"])),
+			Namespace:         fmt.Sprint(i.Tags["k8s_namespace"]),
+			UID:               types.UID(fmt.Sprint(i.Tags["k8s_uid"])),
 			CreationTimestamp: podCreationTimestamp,
 			Annotations:       tpsAnnotations,
 		},
