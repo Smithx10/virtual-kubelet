@@ -10,7 +10,6 @@ import (
 	"io"
 	"io/ioutil"
 	"log"
-	"math/rand"
 	"net"
 	"net/http"
 	"os"
@@ -457,6 +456,7 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	// Build Metadata
 	metadata := make(map[string]string)
 	metadata["user-data"] = "{\"env_vars\": " + env_vars + "}"
+	metadata["k8s_pod"] = string(Pod)
 
 	// Build Tags
 	tags := make(map[string]string)
@@ -469,7 +469,6 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	tags["k8s_namespace"] = pod.Namespace
 	tags["k8s_nodename"] = p.nodeName
 	tags["k8s_uid"] = string(pod.UID)
-	tags["Pod"] = string(Pod)
 
 	// Build Tags: firewall group
 	if pod.ObjectMeta.Annotations["fwgroup"] != "" {
@@ -653,10 +652,7 @@ func (p *TritonProvider) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 			break
 		}
 
-		err = c.Instances().Delete(ctx, &compute.DeleteInstanceInput{ID: p.pods[fn].pod.Annotations["t_uuid"]})
-		if err == nil {
-			break
-		}
+		c.Instances().Delete(ctx, &compute.DeleteInstanceInput{ID: p.pods[fn].pod.Annotations["t_uuid"]})
 		time.Sleep(2 * time.Second)
 	}
 
@@ -666,23 +662,39 @@ func (p *TritonProvider) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 		return err
 	}
 
-	//Get fw rules from the Instance
+	// Get Instance Rules
 	rules, err := n.Firewall().ListMachineRules(ctx, &network.ListMachineRulesInput{MachineID: p.pods[fn].pod.Annotations["t_uuid"]})
 	if err != nil {
-		return err
+		fmt.Println(err)
 	}
 
-	// Iterate over and delete them
+	var filteredRules []*network.FirewallRule
 	for _, v := range rules {
-		time.Sleep(time.Duration(rand.Intn(3)) * time.Second)
+		if strings.Contains(v.Description, "Set by K8S") {
+			filteredRules = append(filteredRules, v)
+		}
+	}
+
+	fwgroup := p.pods[fn].pod.Annotations["fwgroup"]
+	//Get fw rules from the Instance
+	// Iterate over and delete them
+	for _, v := range filteredRules {
 		machines, err := n.Firewall().ListRuleMachines(ctx, &network.ListRuleMachinesInput{ID: v.ID})
 		if err != nil {
 			fmt.Println(err)
 		}
+		if len(machines) == 0 || machines == nil {
+			if strings.Contains(v.Description, fwgroup) {
+				err = n.Firewall().DeleteRule(ctx, &network.DeleteRuleInput{ID: v.ID})
+			}
+		}
 		if len(machines) == 1 || len(machines) == 0 || machines == nil {
-			n.Firewall().DeleteRule(ctx, &network.DeleteRuleInput{ID: v.ID})
+			if !strings.Contains(v.Description, fwgroup) {
+				err = n.Firewall().DeleteRule(ctx, &network.DeleteRuleInput{ID: v.ID})
+			}
 		}
 	}
+
 	delete(p.pods, fn)
 
 	return nil
@@ -865,7 +877,7 @@ func (p *TritonProvider) OperatingSystem() string {
 
 func instanceToPod(i *compute.Instance) (*corev1.Pod, error) {
 	// Get CreatePod Spec from the Metadata
-	bytes := []byte(fmt.Sprint(i.Tags["Pod"]))
+	bytes := []byte(fmt.Sprint(i.Metadata["k8s_pod"]))
 	var tps *corev1.Pod
 	json.Unmarshal(bytes, &tps)
 
@@ -945,7 +957,7 @@ func instanceToPod(i *compute.Instance) (*corev1.Pod, error) {
 			Annotations:       tpsAnnotations,
 		},
 		Spec: corev1.PodSpec{
-			NodeName:      fmt.Sprint(i.Tags["NodeName"]),
+			NodeName:      fmt.Sprint(i.Tags["k8s_nodename"]),
 			Volumes:       []corev1.Volume{},
 			Containers:    containers,
 			RestartPolicy: tps.Spec.RestartPolicy,
