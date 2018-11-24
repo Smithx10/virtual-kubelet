@@ -649,11 +649,12 @@ func (p *TritonProvider) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 	for {
 		_, err := c.Instances().Get(ctx, &compute.GetInstanceInput{ID: p.pods[fn].pod.Annotations["t_uuid"]})
 		if err != nil {
+			time.Sleep(1 * time.Second)
 			break
 		}
 
 		c.Instances().Delete(ctx, &compute.DeleteInstanceInput{ID: p.pods[fn].pod.Annotations["t_uuid"]})
-		time.Sleep(2 * time.Second)
+		time.Sleep(1 * time.Second)
 	}
 
 	// Delete FW Rules
