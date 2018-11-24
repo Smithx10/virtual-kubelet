@@ -22,6 +22,7 @@ import (
 	"github.com/joyent/triton-go/compute"
 	"github.com/joyent/triton-go/network"
 	"github.com/virtual-kubelet/virtual-kubelet/manager"
+	"github.com/y0ssar1an/q"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -34,7 +35,7 @@ type TritonPod struct {
 	shutdown    context.CancelFunc
 	pod         *corev1.Pod
 	statusLock  sync.RWMutex
-	probes      map[string]*corev1.Probe
+	probes      map[string]*TritonProbe
 	fn          string
 	backoff     *Backoff
 }
@@ -97,11 +98,22 @@ func (p *TritonProvider) RestartInstance(tp *TritonPod) {
 		// Explcitly Mark the Instance Not Ready.
 		tp.pod.Status.ContainerStatuses[0].Ready = false
 
-		// Try and Start the instance
-		c.Instances().Start(tp.shutdownCtx, &compute.StartInstanceInput{InstanceID: tp.pod.Annotations["t_uuid"]})
+		// Get Instance State
+		i, err := c.Instances().Get(tp.shutdownCtx, &compute.GetInstanceInput{ID: tp.pod.Annotations["t_uuid"]})
 
-		// Restart the Instance
-		c.Instances().Reboot(tp.shutdownCtx, &compute.RebootInstanceInput{InstanceID: tp.pod.Annotations["t_uuid"]})
+		if err != nil {
+			fmt.Println("TODO, Think about this.")
+		}
+
+		if i.State == "running" || i.State == "provisioning" {
+			// Restart the Instance
+			c.Instances().Reboot(tp.shutdownCtx, &compute.RebootInstanceInput{InstanceID: tp.pod.Annotations["t_uuid"]})
+		}
+
+		if i.State == "stopped" || i.State == "failed" {
+			// Start the instance
+			c.Instances().Start(tp.shutdownCtx, &compute.StartInstanceInput{InstanceID: tp.pod.Annotations["t_uuid"]})
+		}
 
 		// Bump The Restart Count
 		tp.pod.Status.ContainerStatuses[0].RestartCount++
@@ -135,101 +147,112 @@ func (p *TritonProvider) FailInstance(tp *TritonPod) {
 	c.Instances().Stop(tp.shutdownCtx, &compute.StopInstanceInput{InstanceID: tp.pod.Annotations["t_uuid"]})
 }
 
-// Readiness
-func (p *TritonProvider) RunReadiness(tp *TritonPod) {
-	// Set Cleaner Var
-	r := tp.probes["readiness"]
-	// Perform Initial Readiness Delay
-	time.Sleep(time.Duration(r.InitialDelaySeconds) * time.Second)
-	// Set Failure Count.
-	//failcount := 0
+type TritonProbe struct {
+	TargetIP            string
+	Exec                *corev1.ExecAction
+	HTTPGet             *corev1.HTTPGetAction
+	TCPSocket           *corev1.TCPSocketAction
+	InitialDelaySeconds int32
+	Period              int32
+	FailureThreshold    int32
+	SuccessThreshold    int32
+	TimeoutSeconds      int32
+}
+
+func (p *TritonProvider) NewTritonProbe(ip string, probe *corev1.Probe) (*TritonProbe, error) {
+	tprobe := &TritonProbe{
+		TargetIP:            ip,
+		Exec:                probe.Handler.Exec,
+		HTTPGet:             probe.Handler.HTTPGet,
+		TCPSocket:           probe.Handler.TCPSocket,
+		InitialDelaySeconds: probe.InitialDelaySeconds,
+		TimeoutSeconds:      probe.TimeoutSeconds,
+		Period:              probe.PeriodSeconds,
+		SuccessThreshold:    probe.SuccessThreshold,
+		FailureThreshold:    probe.FailureThreshold,
+	}
+
+	return tprobe, nil
+}
+
+func (p *TritonProvider) RunProbe(probe *TritonProbe) error {
+	// Handle TCP
+	if probe.TCPSocket != nil {
+		c, err := net.DialTimeout("tcp", net.JoinHostPort(probe.TargetIP, probe.TCPSocket.Port.String()), time.Duration(probe.TimeoutSeconds)*time.Second)
+		if err != nil {
+			return err
+		}
+		if c != nil {
+			c.Close()
+		}
+	}
+	// Handle HTTP
+	if probe.HTTPGet != nil {
+		r, err := http.Get(fmt.Sprintf("http://%s:%d%s", probe.TargetIP, probe.HTTPGet.Port.IntVal, probe.HTTPGet.Path))
+		if err != nil {
+			return err
+		}
+		if r.StatusCode < 200 && r.StatusCode > 400 {
+			return err
+		}
+		if probe.HTTPGet.HTTPHeaders != nil {
+			if !(r.Header.Get(probe.HTTPGet.HTTPHeaders[0].Name) == probe.HTTPGet.HTTPHeaders[0].Value) {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// Liveness
+func (p *TritonProvider) RunLiveness(tp *TritonPod) {
+	//Set Cleaner Var
+	l := tp.probes["liveness"]
+	//Perform Initial Liveness Delay
+	time.Sleep(time.Duration(l.InitialDelaySeconds) * time.Second)
+	//Set Failure Count.
+	failcount := 0
 	for {
 		select {
 		case <-tp.shutdownCtx.Done():
 			return
 		default:
-			//tp.statusLock.Lock()
-			//tp.status.Phase = instanceStateToPodPhase("failed")
-			//tp.statusLock.Unlock()
-			//fmt.Println(failcount)
+			err := p.RunProbe(l)
+			q.Q(failcount, err)
+			if err != nil {
+				failcount++
+			}
+
+			if failcount == int(l.FailureThreshold) {
+				fmt.Println("FailureThreshold Hit.  Restarting the Container")
+				p.RestartInstance(tp)
+				return
+			}
 		}
-		time.Sleep(time.Duration(r.PeriodSeconds) * time.Second)
+		time.Sleep(time.Duration(l.Period) * time.Second)
 	}
 }
 
-// Liveness
-func (p *TritonProvider) RunLiveness(tp *TritonPod) {
+// Readiness
+func (p *TritonProvider) RunReadiness(tp *TritonPod) {
 	// Set Cleaner Var
-	l := tp.probes["liveness"]
-	// Perform Initial Liveness Delay
-	time.Sleep(time.Duration(l.InitialDelaySeconds) * time.Second)
+	//r := tp.probes["readiness"]
+	// Perform Initial Readiness Delay
+	//time.Sleep(time.Duration(r.InitialDelaySeconds) * time.Second)
 	// Set Failure Count.
-	failcount := 0
-
-	// Handle TCP
-	if l.Handler.TCPSocket != nil {
-		for {
-			select {
-			case <-tp.shutdownCtx.Done():
-				return
-			default:
-				fmt.Println(tp.fn + ": Running TCP Check on " + tp.pod.Status.PodIP + ":" + l.Handler.TCPSocket.Port.String())
-				c, err := net.DialTimeout("tcp", net.JoinHostPort(tp.pod.Status.PodIP, l.Handler.TCPSocket.Port.String()), time.Duration(l.TimeoutSeconds)*time.Second)
-				if err != nil {
-					failcount++
-					fmt.Println(tp.fn + ": TCP Check Failed.  Failure Count: " + fmt.Sprint(failcount))
-				}
-				if c != nil {
-					c.Close()
-					failcount = 0
-					fmt.Println(tp.fn + ": TCP Check Passed. Port: " + fmt.Sprint(l.Handler.TCPSocket.Port.IntVal) + " is listening")
-				}
-				if failcount == int(l.FailureThreshold) {
-					fmt.Println("FailureThreshold Hit.  Restarting the Container")
-					p.RestartInstance(tp)
-					return
-				}
-			}
-			time.Sleep(time.Duration(l.PeriodSeconds) * time.Second)
-		}
-	}
-	// Handle HTTP
-	if l.Handler.HTTPGet != nil {
-		for {
-			select {
-			case <-tp.shutdownCtx.Done():
-				return
-			default:
-				fmt.Println(tp.fn + ": Running HTTP Check")
-				r, err := http.Get(fmt.Sprintf("http://%s:%d%s", tp.pod.Status.PodIP, l.HTTPGet.Port.IntVal, l.HTTPGet.Path))
-				if err != nil {
-					failcount++
-					fmt.Println(tp.fn + ": HTTP Check Failed.  Count: " + fmt.Sprint(failcount))
-				}
-				if l.Handler.HTTPGet.HTTPHeaders != nil {
-					if r != nil {
-						if r.Header.Get(l.HTTPGet.HTTPHeaders[0].Name) == l.HTTPGet.HTTPHeaders[0].Value {
-							fmt.Println("Header Check Passed. " + l.HTTPGet.HTTPHeaders[0].Name + " == " + l.HTTPGet.HTTPHeaders[0].Value)
-						} else {
-							failcount++
-							fmt.Println("Header Check Failed. " + l.HTTPGet.HTTPHeaders[0].Name + " != " + l.HTTPGet.HTTPHeaders[0].Value)
-						}
-					}
-
-				} else {
-					if failcount == int(l.FailureThreshold) {
-						fmt.Println("FailureThreshold Hit.  Setting PodPhase to \"failed\"}")
-						tp.statusLock.Lock()
-						tp.pod.Status.Phase = instanceStateToPodPhase("failed")
-						tp.statusLock.Unlock()
-						return
-					}
-				}
-			}
-		}
-		time.Sleep(time.Duration(l.PeriodSeconds) * time.Second)
-	}
-
+	//failcount := 0
+	//for {
+	//select {
+	//case <-tp.shutdownCtx.Done():
+	//return
+	//default:
+	////tp.statusLock.Lock()
+	////tp.status.Phase = instanceStateToPodPhase("failed")
+	////tp.statusLock.Unlock()
+	////fmt.Println(failcount)
+	//}
+	//time.Sleep(time.Duration(r.PeriodSeconds) * time.Second)
+	//}
 }
 
 // TritonProvider implements the virtual-kubelet provider interface.
@@ -376,19 +399,27 @@ func (p *TritonProvider) Capacity(ctx context.Context) corev1.ResourceList {
 	}
 }
 
-func (p *TritonProvider) NewTritonPod(ctx context.Context, pod *corev1.Pod) *TritonPod {
+func (p *TritonProvider) NewTritonPod(ctx context.Context, pod *corev1.Pod) (*TritonPod, error) {
 	// Use Pod Namespace and Name for map key.
 	fn := p.GetPodFullName(pod.Namespace, pod.Name)
 
 	// Assign Probes to TritonPod Struct
-	tprobes := make(map[string]*corev1.Probe)
+	tprobes := make(map[string]*TritonProbe)
 
 	if pod.Spec.Containers[0].LivenessProbe != nil {
-		tprobes["liveness"] = pod.Spec.Containers[0].LivenessProbe
+		tprobe, err := p.NewTritonProbe(pod.Status.PodIP, pod.Spec.Containers[0].LivenessProbe)
+		if err != nil {
+			return nil, err
+		}
+		tprobes["liveness"] = tprobe
 	}
 
 	if pod.Spec.Containers[0].ReadinessProbe != nil {
-		tprobes["readiness"] = pod.Spec.Containers[0].ReadinessProbe
+		tprobe, err := p.NewTritonProbe(pod.Status.PodIP, pod.Spec.Containers[0].ReadinessProbe)
+		if err != nil {
+			return nil, err
+		}
+		tprobes["readiness"] = tprobe
 	}
 
 	// Create the Context for Terminating the GoRoutines which will UpdateState and Phase,  and Run Probes
@@ -409,7 +440,7 @@ func (p *TritonProvider) NewTritonPod(ctx context.Context, pod *corev1.Pod) *Tri
 		fn:          fn,
 		backoff:     backoff,
 	}
-	return tp
+	return tp, nil
 
 }
 
@@ -434,8 +465,6 @@ func (p *TritonProvider) RunTritonPodLoops(tp *TritonPod) {
 func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	log.Printf("Received CreatePod request for %+v.\n", pod)
 
-	tp := p.NewTritonPod(ctx, pod)
-	p.pods[tp.fn] = tp
 	// Marshal the Pod.Spec that was recieved from the Masters and write store it on the instance.  In the event that Virtual Kubelet Crashes we can rehydrate from the tag.
 	Pod, _ := json.Marshal(pod)
 
@@ -617,8 +646,10 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 			if err != nil {
 				return err
 			}
+			tp, _ := p.NewTritonPod(ctx, converted)
 			// Add PodSpec to TritonPod
-			tp.pod = converted
+			p.pods[tp.fn] = tp
+			p.pods[tp.fn].pod = converted
 			// Run the Routines
 			p.RunTritonPodLoops(tp)
 			break
@@ -783,7 +814,7 @@ func (p *TritonProvider) GetPods(ctx context.Context) ([]*corev1.Pod, error) {
 			return nil, err
 		}
 		// New Triton Pod
-		tp := p.NewTritonPod(ctx, converted)
+		tp, _ := p.NewTritonPod(ctx, converted)
 		p.pods[tp.fn] = tp
 		// Put Converted Pod Back on Struct
 		p.pods[tp.fn].pod = converted
