@@ -474,6 +474,17 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	if pod.ObjectMeta.Annotations["fwgroup"] != "" {
 		tags["k8s_"+pod.ObjectMeta.Annotations["fwgroup"]] = "true"
 	}
+	// Firewall Enabled
+	var fwenabled bool
+	if pod.ObjectMeta.Annotations["fwenabled"] == "true" {
+		fwenabled = true
+	}
+	if pod.ObjectMeta.Annotations["fwenabled"] == "false" {
+		fwenabled = false
+	}
+	if pod.ObjectMeta.Annotations["fwenabled"] == "" {
+		fwenabled = false
+	}
 
 	// Build Networks
 	var networks []string
@@ -513,13 +524,14 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 		return err
 	}
 	i, err := c.Instances().Create(ctx, &compute.CreateInstanceInput{
-		Image:    pod.Spec.Containers[0].Image,
-		Package:  pod.ObjectMeta.Annotations["package"],
-		Name:     pod.Name,
-		Tags:     tags,
-		Networks: networks,
-		Metadata: metadata,
-		Affinity: affinity,
+		Image:           pod.Spec.Containers[0].Image,
+		Package:         pod.ObjectMeta.Annotations["package"],
+		Name:            pod.Name,
+		Tags:            tags,
+		Networks:        networks,
+		Metadata:        metadata,
+		Affinity:        affinity,
+		FirewallEnabled: fwenabled,
 	})
 	if err != nil {
 		return err
