@@ -1064,12 +1064,6 @@ func instanceToPod(i *compute.Instance) (*corev1.Pod, error) {
 		},
 	}
 
-	//pod, _ := json.Marshal(p)
-	//a, _ := jd.ReadJsonString(string(pod))
-	//b, _ := jd.ReadJsonString(fmt.Sprint(i.Tags["PodSpec"]))
-
-	//q.Q(a.Diff(b).Render())
-
 	return &p, nil
 }
 
