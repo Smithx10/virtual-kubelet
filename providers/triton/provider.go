@@ -110,8 +110,7 @@ func (p *TritonProvider) RestartInstance(tp *TritonPod) {
 		tp.pod.Status.ContainerStatuses[0].Ready = false
 		// See if we need to Reschedule.  If LastTerm is outside of the Window we should set the phase to Failed.  In a replica set,  this will force a reschedule.
 		if tp.backoff.end.Before(LastTerm) {
-			tp.pod.Status.Phase = instanceStateToPodPhase("failed")
-			p.DeletePod(context.Background(), tp.pod)
+			p.FailInstance(tp, LastTerm)
 			return
 		}
 		// Get Instance State
@@ -147,12 +146,25 @@ func (p *TritonProvider) RestartInstance(tp *TritonPod) {
 	}
 }
 
-func (p *TritonProvider) FailInstance(tp *TritonPod) {
+func (p *TritonProvider) FailInstance(tp *TritonPod, LastTerm time.Time) {
+	ContainerID := tp.pod.Status.ContainerStatuses[0].ContainerID
+
 	c, err := p.client.Compute()
 	if err != nil {
 		return
 	}
-	c.Instances().Stop(tp.shutdownCtx, &compute.StopInstanceInput{InstanceID: tp.pod.Status.ContainerStatuses[0].ContainerID})
+	// Mark Pod Failed in K8S,  Forces Reschedule for Replicasets
+	tp.pod.Status.Phase = instanceStateToPodPhase("failed")
+
+	// Stop The Instance and Add a failed tag with the time.
+	c.Instances().Stop(tp.shutdownCtx, &compute.StopInstanceInput{InstanceID: ContainerID})
+	c.Instances().AddTags(tp.shutdownCtx, &compute.AddTagsInput{
+		ID: ContainerID,
+		Tags: map[string]string{
+			"k8s_failed": LastTerm.Format(time.RFC3339),
+		},
+	})
+	tp.shutdown()
 }
 
 type TritonProbe struct {
@@ -703,9 +715,9 @@ func (p *TritonProvider) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 	log.Printf("Received DeletePod request for %s/%s.\n", pod.Namespace, pod.Name)
 	fn := p.GetPodFullName(pod.Namespace, pod.Name)
 
-	// Wait for ContainerID to be present
+	// Wait for Container to be present
 	for {
-		if p.pods[fn].pod.Status.ContainerStatuses[0].ContainerID != "" {
+		if p.pods[fn] != nil {
 			break
 		}
 		time.Sleep(1 * time.Second)
