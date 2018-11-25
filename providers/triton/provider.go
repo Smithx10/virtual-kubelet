@@ -196,6 +196,8 @@ func (p *TritonProvider) NewTritonProbe(ip string, probe *corev1.Probe) (*Triton
 }
 
 func (p *TritonProvider) RunProbe(probe *TritonProbe) error {
+	// TODO: Wire Up A probe to talk to ContainerPilot
+	// TODO: Handle Exec,  Exploring the use of SSH clients in Go.
 	// Handle TCP
 	if probe.TCPSocket != nil {
 		c, err := net.DialTimeout("tcp", net.JoinHostPort(probe.TargetIP, probe.TCPSocket.Port.String()), time.Duration(probe.TimeoutSeconds)*time.Second)
@@ -994,6 +996,16 @@ func instanceToPod(i *compute.Instance) (*corev1.Pod, error) {
 		//Env []EnvVar `json:"env,omitempty" patchStrategy:"merge" patchMergeKey:"name" protobuf:"bytes,7,rep,name=env"`
 		Env: tps.Spec.Containers[0].Env,
 		//Resources ResourceRequirements `json:"resources,omitempty" protobuf:"bytes,8,opt,name=resources"`
+		Resources: corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{
+				corev1.ResourceMemory:  *resource.NewQuantity(int64(i.Memory), resource.DecimalSI),
+				corev1.ResourceStorage: *resource.NewQuantity(int64(i.Disk), resource.DecimalSI),
+			},
+			Limits: corev1.ResourceList{
+				corev1.ResourceMemory:  *resource.NewQuantity(int64(i.Memory), resource.DecimalSI),
+				corev1.ResourceStorage: *resource.NewQuantity(int64(i.Disk), resource.DecimalSI),
+			},
+		},
 		//VolumeMounts []VolumeMount `json:"volumeMounts,omitempty" patchStrategy:"merge" patchMergeKey:"mountPath" protobuf:"bytes,9,rep,name=volumeMounts"`
 		//VolumeDevices []VolumeDevice `json:"volumeDevices,omitempty" patchStrategy:"merge" patchMergeKey:"devicePath" protobuf:"bytes,21,rep,name=volumeDevices"`
 		//LivenessProbe *Probe `json:"livenessProbe,omitempty" protobuf:"bytes,10,opt,name=livenessProbe"`
@@ -1009,8 +1021,6 @@ func instanceToPod(i *compute.Instance) (*corev1.Pod, error) {
 		//StdinOnce bool `json:"stdinOnce,omitempty" protobuf:"varint,17,opt,name=stdinOnce"`
 		//TTY bool `json:"tty,omitempty" protobuf:"varint,18,opt,name=tty"`
 	}
-
-	// Return
 
 	containerStatus := corev1.ContainerStatus{
 		//Name string `json:"name" protobuf:"bytes,1,opt,name=name"`
