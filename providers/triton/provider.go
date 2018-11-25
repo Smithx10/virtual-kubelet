@@ -63,7 +63,6 @@ func (p *TritonProvider) GetInstStatus(tp *TritonPod) {
 				return
 			}
 
-			//instanceToPod()
 			tp.statusLock.Lock()
 			// Handle Pod Phase
 			tp.pod.Status.Phase = instanceStateToPodPhase(i.State)
