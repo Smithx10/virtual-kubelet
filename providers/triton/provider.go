@@ -563,6 +563,7 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	var networks []string
 	if pod.ObjectMeta.Annotations["networks"] != "" {
 		r := csv.NewReader(strings.NewReader(pod.ObjectMeta.Annotations["networks"]))
+		r.TrimLeadingSpace = true
 		for {
 			record, err := r.Read()
 			if err == io.EOF {
@@ -579,6 +580,7 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	var affinity []string
 	if pod.ObjectMeta.Annotations["affinity"] != "" {
 		r := csv.NewReader(strings.NewReader(pod.ObjectMeta.Annotations["affinity"]))
+		r.TrimLeadingSpace = true
 		for {
 			record, err := r.Read()
 			if err == io.EOF {
