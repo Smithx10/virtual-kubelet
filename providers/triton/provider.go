@@ -22,7 +22,6 @@ import (
 	"github.com/joyent/triton-go/compute"
 	"github.com/joyent/triton-go/network"
 	"github.com/virtual-kubelet/virtual-kubelet/manager"
-	"github.com/y0ssar1an/q"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -59,7 +58,7 @@ func (p *TritonProvider) GetInstStatus(tp *TritonPod) {
 			if err != nil {
 				return
 			}
-			i, err := c.Instances().Get(tp.shutdownCtx, &compute.GetInstanceInput{ID: tp.pod.Annotations["t_uuid"]})
+			i, err := c.Instances().Get(tp.shutdownCtx, &compute.GetInstanceInput{ID: tp.pod.Status.ContainerStatuses[0].ContainerID})
 			if err != nil {
 				return
 			}
@@ -70,7 +69,11 @@ func (p *TritonProvider) GetInstStatus(tp *TritonPod) {
 			tp.pod.Status.Phase = instanceStateToPodPhase(i.State)
 			// Handle The Container Level State
 			tp.pod.Status.ContainerStatuses[0].State = instanceStateToContainerState(i.State)
-			tp.pod.Status.ContainerStatuses[0].Ready = instanceStateToPodPhase(i.State) == corev1.PodRunning
+
+			// Handle Readiness if Probe is nil
+			if tp.probes["readiness"] == nil {
+				tp.pod.Status.ContainerStatuses[0].Ready = instanceStateToPodPhase(i.State) == corev1.PodRunning
+			}
 			tp.statusLock.Unlock()
 
 			// Poll time for Instance State
@@ -81,57 +84,62 @@ func (p *TritonProvider) GetInstStatus(tp *TritonPod) {
 
 //  Restart Instance and Bump the Count
 func (p *TritonProvider) RestartInstance(tp *TritonPod) {
+	ContainerID := tp.pod.Status.ContainerStatuses[0].ContainerID
+	// Convert Metav1.Time to time.Time
+	LastTerminate := tp.pod.Status.ContainerStatuses[0].LastTerminationState.Terminated.StartedAt.Format(time.RFC3339)
+	LastTerm, _ := time.Parse(time.RFC3339, LastTerminate)
+
 	c, err := p.client.Compute()
 	if err != nil {
 		return
 	}
 
 	if tp.pod.Spec.RestartPolicy != "Never" {
-		// Reset the Window if we've passed it without having to fire a restart
+
+		// Reset the Window if we've passed the success window (5 minutes) without having to fire a restart
+		if tp.backoff.end.Add(2 * time.Minute).Before(LastTerm) {
+			tp.backoff.start = time.Time{}
+		}
 		// Set the Window
 		if (tp.backoff.start == time.Time{}) {
 			fmt.Println("Setting the Backoff Window Start and End")
 			tp.backoff.start = time.Now()
 			tp.backoff.end = tp.backoff.start.Add(tp.backoff.max)
 		}
-
 		// Explcitly Mark the Instance Not Ready.
 		tp.pod.Status.ContainerStatuses[0].Ready = false
-
+		// See if we need to Reschedule.  If LastTerm is outside of the Window we should set the phase to Failed.  In a replica set,  this will force a reschedule.
+		if tp.backoff.end.Before(LastTerm) {
+			tp.pod.Status.Phase = instanceStateToPodPhase("failed")
+			p.DeletePod(context.Background(), tp.pod)
+			return
+		}
 		// Get Instance State
-		i, err := c.Instances().Get(tp.shutdownCtx, &compute.GetInstanceInput{ID: tp.pod.Annotations["t_uuid"]})
-
+		i, err := c.Instances().Get(tp.shutdownCtx, &compute.GetInstanceInput{ID: ContainerID})
 		if err != nil {
 			fmt.Println("TODO, Think about this.")
 		}
-
 		if i.State == "running" || i.State == "provisioning" {
 			// Restart the Instance
-			c.Instances().Reboot(tp.shutdownCtx, &compute.RebootInstanceInput{InstanceID: tp.pod.Annotations["t_uuid"]})
+			c.Instances().Reboot(tp.shutdownCtx, &compute.RebootInstanceInput{InstanceID: ContainerID})
 		}
-
 		if i.State == "stopped" || i.State == "failed" {
 			// Start the instance
-			c.Instances().Start(tp.shutdownCtx, &compute.StartInstanceInput{InstanceID: tp.pod.Annotations["t_uuid"]})
+			c.Instances().Start(tp.shutdownCtx, &compute.StartInstanceInput{InstanceID: ContainerID})
 		}
-
 		// Bump The Restart Count
 		tp.pod.Status.ContainerStatuses[0].RestartCount++
-
 		// Bump the Delay up
 		tp.backoff.delayLock.Lock()
 		tp.backoff.delay = tp.backoff.delay * 2
 		tp.backoff.delayLock.Unlock()
-
 		// Sleep The Delay
 		time.Sleep(time.Duration(tp.backoff.delay) * time.Second)
-
 		// Restart Probes
 		// Liveness
 		if tp.pod.Spec.Containers[0].LivenessProbe != nil {
 			go p.RunLiveness(tp)
 		}
-
 		// Readiness
 		if tp.pod.Spec.Containers[0].ReadinessProbe != nil {
 			go p.RunReadiness(tp)
@@ -144,7 +152,7 @@ func (p *TritonProvider) FailInstance(tp *TritonPod) {
 	if err != nil {
 		return
 	}
-	c.Instances().Stop(tp.shutdownCtx, &compute.StopInstanceInput{InstanceID: tp.pod.Annotations["t_uuid"]})
+	c.Instances().Stop(tp.shutdownCtx, &compute.StopInstanceInput{InstanceID: tp.pod.Status.ContainerStatuses[0].ContainerID})
 }
 
 type TritonProbe struct {
@@ -188,7 +196,11 @@ func (p *TritonProvider) RunProbe(probe *TritonProbe) error {
 	}
 	// Handle HTTP
 	if probe.HTTPGet != nil {
-		r, err := http.Get(fmt.Sprintf("http://%s:%d%s", probe.TargetIP, probe.HTTPGet.Port.IntVal, probe.HTTPGet.Path))
+		client := http.Client{
+			Timeout: time.Duration(time.Duration(probe.TimeoutSeconds) * time.Second),
+		}
+		r, err := client.Get(fmt.Sprintf("http://%s:%d%s", probe.TargetIP, probe.HTTPGet.Port.IntVal, probe.HTTPGet.Path))
+		//r, err := http.Get(fmt.Sprintf("http://%s:%d%s", probe.TargetIP, probe.HTTPGet.Port.IntVal, probe.HTTPGet.Path))
 		if err != nil {
 			return err
 		}
@@ -218,13 +230,13 @@ func (p *TritonProvider) RunLiveness(tp *TritonPod) {
 			return
 		default:
 			err := p.RunProbe(l)
-			q.Q(failcount, err)
 			if err != nil {
 				failcount++
 			}
-
 			if failcount == int(l.FailureThreshold) {
 				fmt.Println("FailureThreshold Hit.  Restarting the Container")
+				tp.pod.Status.ContainerStatuses[0].State = instanceStateToContainerState("failed")
+				tp.pod.Status.ContainerStatuses[0].LastTerminationState = instanceStateToContainerState("failed")
 				p.RestartInstance(tp)
 				return
 			}
@@ -235,24 +247,43 @@ func (p *TritonProvider) RunLiveness(tp *TritonPod) {
 
 // Readiness
 func (p *TritonProvider) RunReadiness(tp *TritonPod) {
-	// Set Cleaner Var
-	//r := tp.probes["readiness"]
-	// Perform Initial Readiness Delay
-	//time.Sleep(time.Duration(r.InitialDelaySeconds) * time.Second)
-	// Set Failure Count.
-	//failcount := 0
-	//for {
-	//select {
-	//case <-tp.shutdownCtx.Done():
-	//return
-	//default:
-	////tp.statusLock.Lock()
-	////tp.status.Phase = instanceStateToPodPhase("failed")
-	////tp.statusLock.Unlock()
-	////fmt.Println(failcount)
-	//}
-	//time.Sleep(time.Duration(r.PeriodSeconds) * time.Second)
-	//}
+	//Set Cleaner Var
+	r := tp.probes["readiness"]
+	//Perform Initial Readiness Delay
+	time.Sleep(time.Duration(r.InitialDelaySeconds) * time.Second)
+	//Set Success Count.
+	successcount := 0
+	//Set Failure Count.
+	failcount := 0
+	for {
+		select {
+		case <-tp.shutdownCtx.Done():
+			return
+		default:
+			err := p.RunProbe(r)
+			if err != nil {
+				failcount++
+			}
+			if err == nil {
+				successcount++
+			}
+			if failcount == int(r.FailureThreshold) {
+				fmt.Println("FailureThreshold Hit.  Marking Container Not Ready")
+				tp.statusLock.Lock()
+				tp.pod.Status.ContainerStatuses[0].Ready = false
+				tp.statusLock.Unlock()
+				failcount = 0
+			}
+			if successcount == int(r.SuccessThreshold) {
+				fmt.Println("SuccessThreshold Hit.  Marking Container Ready")
+				tp.statusLock.Lock()
+				tp.pod.Status.ContainerStatuses[0].Ready = true
+				tp.statusLock.Unlock()
+				successcount = 0
+			}
+		}
+		time.Sleep(time.Duration(r.Period) * time.Second)
+	}
 }
 
 // TritonProvider implements the virtual-kubelet provider interface.
@@ -427,8 +458,8 @@ func (p *TritonProvider) NewTritonPod(ctx context.Context, pod *corev1.Pod) (*Tr
 
 	// Create BackoffPolicy
 	backoff := &Backoff{
-		max:   5 * time.Minute,
-		delay: 1,
+		max:   1 * time.Minute,
+		delay: 10,
 	}
 
 	// Init the New Triton Pod Struct.
@@ -670,16 +701,17 @@ func (p *TritonProvider) UpdatePod(ctx context.Context, pod *corev1.Pod) error {
 // DeletePod takes a Kubernetes Pod and deletes it from the provider.
 func (p *TritonProvider) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 	log.Printf("Received DeletePod request for %s/%s.\n", pod.Namespace, pod.Name)
-
 	fn := p.GetPodFullName(pod.Namespace, pod.Name)
 
-	// Wait for t_uuid to be present
+	// Wait for ContainerID to be present
 	for {
-		if p.pods[fn].pod.Annotations["t_uuid"] != "" {
+		if p.pods[fn].pod.Status.ContainerStatuses[0].ContainerID != "" {
 			break
 		}
 		time.Sleep(1 * time.Second)
 	}
+
+	ContainerID := p.pods[fn].pod.Status.ContainerStatuses[0].ContainerID
 
 	c, err := p.client.Compute()
 	if err != nil {
@@ -687,16 +719,15 @@ func (p *TritonProvider) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 	}
 
 	p.pods[fn].shutdown()
-
 	// Delete Instance
 	for {
-		_, err := c.Instances().Get(ctx, &compute.GetInstanceInput{ID: p.pods[fn].pod.Annotations["t_uuid"]})
+		_, err := c.Instances().Get(ctx, &compute.GetInstanceInput{ID: ContainerID})
 		if err != nil {
 			time.Sleep(1 * time.Second)
 			break
 		}
 
-		c.Instances().Delete(ctx, &compute.DeleteInstanceInput{ID: p.pods[fn].pod.Annotations["t_uuid"]})
+		c.Instances().Delete(ctx, &compute.DeleteInstanceInput{ID: ContainerID})
 		time.Sleep(1 * time.Second)
 	}
 
@@ -707,7 +738,7 @@ func (p *TritonProvider) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 	}
 
 	// Get Instance Rules
-	rules, err := n.Firewall().ListMachineRules(ctx, &network.ListMachineRulesInput{MachineID: p.pods[fn].pod.Annotations["t_uuid"]})
+	rules, err := n.Firewall().ListMachineRules(ctx, &network.ListMachineRulesInput{MachineID: ContainerID})
 	if err != nil {
 		fmt.Println(err)
 	}
@@ -748,8 +779,10 @@ func (p *TritonProvider) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 func (p *TritonProvider) GetPod(ctx context.Context, namespace, name string) (*corev1.Pod, error) {
 	log.Printf("Received GetPod request for %s/%s.\n", namespace, name)
 	fn := p.GetPodFullName(namespace, name)
+	ContainerID := p.pods[fn].pod.Status.ContainerStatuses[0].ContainerID
+
 	c, _ := p.client.Compute()
-	i, err := c.Instances().Get(p.pods[fn].shutdownCtx, &compute.GetInstanceInput{ID: p.pods[fn].pod.Annotations["t_uuid"]})
+	i, err := c.Instances().Get(p.pods[fn].shutdownCtx, &compute.GetInstanceInput{ID: ContainerID})
 	if err != nil {
 		return nil, err
 	}
@@ -925,11 +958,6 @@ func instanceToPod(i *compute.Instance) (*corev1.Pod, error) {
 	var tps *corev1.Pod
 	json.Unmarshal(bytes, &tps)
 
-	// Create Map for Storing Triton info in Pod Struct
-	tpsAnnotations := make(map[string]string)
-	tpsAnnotations = tps.Annotations
-	tpsAnnotations["t_uuid"] = i.ID
-
 	// Take Care of time
 	var podCreationTimestamp metav1.Time
 
@@ -949,14 +977,17 @@ func instanceToPod(i *compute.Instance) (*corev1.Pod, error) {
 		//Args []string `json:"args,omitempty" protobuf:"bytes,4,rep,name=args"`
 		//WorkingDir string `json:"workingDir,omitempty" protobuf:"bytes,5,opt,name=workingDir"`
 		//Ports []ContainerPort `json:"ports,omitempty" patchStrategy:"merge" patchMergeKey:"containerPort" protobuf:"bytes,6,rep,name=ports"`
+		Ports: tps.Spec.Containers[0].Ports,
 		//EnvFrom []EnvFromSource `json:"envFrom,omitempty" protobuf:"bytes,19,rep,name=envFrom"`
 		//Env []EnvVar `json:"env,omitempty" patchStrategy:"merge" patchMergeKey:"name" protobuf:"bytes,7,rep,name=env"`
+		Env: tps.Spec.Containers[0].Env,
 		//Resources ResourceRequirements `json:"resources,omitempty" protobuf:"bytes,8,opt,name=resources"`
 		//VolumeMounts []VolumeMount `json:"volumeMounts,omitempty" patchStrategy:"merge" patchMergeKey:"mountPath" protobuf:"bytes,9,rep,name=volumeMounts"`
 		//VolumeDevices []VolumeDevice `json:"volumeDevices,omitempty" patchStrategy:"merge" patchMergeKey:"devicePath" protobuf:"bytes,21,rep,name=volumeDevices"`
 		//LivenessProbe *Probe `json:"livenessProbe,omitempty" protobuf:"bytes,10,opt,name=livenessProbe"`
 		LivenessProbe: tps.Spec.Containers[0].LivenessProbe,
 		//ReadinessProbe *Probe `json:"readinessProbe,omitempty" protobuf:"bytes,11,opt,name=readinessProbe"`
+		ReadinessProbe: tps.Spec.Containers[0].ReadinessProbe,
 		//Lifecycle *Lifecycle `json:"lifecycle,omitempty" protobuf:"bytes,12,opt,name=lifecycle"`
 		//TerminationMessagePath string `json:"terminationMessagePath,omitempty" protobuf:"bytes,13,opt,name=terminationMessagePath"`
 		//TerminationMessagePolicy TerminationMessagePolicy `json:"terminationMessagePolicy,omitempty" protobuf:"bytes,20,opt,name=terminationMessagePolicy,casttype=TerminationMessagePolicy"`
@@ -979,8 +1010,11 @@ func instanceToPod(i *compute.Instance) (*corev1.Pod, error) {
 		Ready: instanceStateToPodPhase(i.State) == corev1.PodRunning,
 		//RestartCount int32 `json:"restartCount" protobuf:"varint,5,opt,name=restartCount"`
 		//Image string `json:"image" protobuf:"bytes,6,opt,name=image"`
+		Image: i.Image,
 		//ImageID string `json:"imageID" protobuf:"bytes,7,opt,name=imageID"`
+		ImageID: i.Image,
 		//ContainerID string `json:"containerID,omitempty" protobuf:"bytes,8,opt,name=containerID"`
+		ContainerID: i.ID,
 	}
 
 	containers := make([]corev1.Container, 0, 1)
@@ -998,7 +1032,7 @@ func instanceToPod(i *compute.Instance) (*corev1.Pod, error) {
 			Namespace:         fmt.Sprint(i.Tags["k8s_namespace"]),
 			UID:               types.UID(fmt.Sprint(i.Tags["k8s_uid"])),
 			CreationTimestamp: podCreationTimestamp,
-			Annotations:       tpsAnnotations,
+			Annotations:       tps.Annotations,
 		},
 		Spec: corev1.PodSpec{
 			NodeName:      fmt.Sprint(i.Tags["k8s_nodename"]),
