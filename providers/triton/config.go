@@ -61,7 +61,7 @@ func (p *TritonProvider) loadConfig(r io.Reader) error {
 
 	// Set defaults for optional fields.
 	config.PlatformVersion = defaultPlatformVersion
-	conig.NodeName = defaultNodeName
+	config.NodeName = defaultNodeName
 	config.OperatingSystem = defaultOperatingSystem
 	config.CPU = defaultCPUCapacity
 	config.Memory = defaultMemoryCapacity
