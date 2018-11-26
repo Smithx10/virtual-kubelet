@@ -40,6 +40,7 @@ type providerConfig struct {
 	Memory          string
 	Storage         string
 	Pods            string
+	NodeName        string
 }
 
 // loadConfigFile loads the given Triton provider configuration file.
@@ -67,6 +68,7 @@ func (p *TritonProvider) loadConfig(r io.Reader) error {
 	config.Memory = defaultMemoryCapacity
 	config.Storage = defaultStorageCapacity
 	config.Pods = defaultPodCapacity
+	q.Q(config)
 
 	// Read the user-supplied configuration.
 	_, err := toml.DecodeReader(r, &config)
