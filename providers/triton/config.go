@@ -16,6 +16,8 @@ const (
 	defaultPlatformVersion = "LATEST"
 	defaultOperatingSystem = providers.OperatingSystemLinux
 
+	defaultNodeName = "triton-vkubelet"
+
 	// Default resource capacity advertised by Triton provider.
 	// These are intentionally low to prevent any accidental overuse.
 	defaultCPUCapacity     = "20"
@@ -59,6 +61,7 @@ func (p *TritonProvider) loadConfig(r io.Reader) error {
 
 	// Set defaults for optional fields.
 	config.PlatformVersion = defaultPlatformVersion
+	conig.NodeName = defaultNodeName
 	config.OperatingSystem = defaultOperatingSystem
 	config.CPU = defaultCPUCapacity
 	config.Memory = defaultMemoryCapacity
@@ -100,6 +103,7 @@ func (p *TritonProvider) loadConfig(r io.Reader) error {
 
 	p.platformVersion = config.PlatformVersion
 	p.operatingSystem = config.OperatingSystem
+	p.nodeName = config.NodeName
 	p.capacity.cpu = config.CPU
 	p.capacity.memory = config.Memory
 	p.capacity.storage = config.Storage

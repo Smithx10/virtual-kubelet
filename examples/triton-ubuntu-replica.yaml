@@ -11,8 +11,9 @@ spec:
       - {key: tier, operator: In, values: [frontend]}
   template:
     metadata:
-      labels:
+      annotations:
         package: sample-1G
+      labels:
         app: guestbook
         tier: frontend
     spec:
