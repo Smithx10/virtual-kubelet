@@ -16,8 +16,6 @@ const (
 	defaultPlatformVersion = "LATEST"
 	defaultOperatingSystem = providers.OperatingSystemLinux
 
-	defaultNodeName = "triton-vkubelet"
-
 	// Default resource capacity advertised by Triton provider.
 	// These are intentionally low to prevent any accidental overuse.
 	defaultCPUCapacity     = "20"
@@ -40,7 +38,6 @@ type providerConfig struct {
 	Memory          string
 	Storage         string
 	Pods            string
-	NodeName        string
 }
 
 // loadConfigFile loads the given Triton provider configuration file.
@@ -62,13 +59,11 @@ func (p *TritonProvider) loadConfig(r io.Reader) error {
 
 	// Set defaults for optional fields.
 	config.PlatformVersion = defaultPlatformVersion
-	config.NodeName = defaultNodeName
 	config.OperatingSystem = defaultOperatingSystem
 	config.CPU = defaultCPUCapacity
 	config.Memory = defaultMemoryCapacity
 	config.Storage = defaultStorageCapacity
 	config.Pods = defaultPodCapacity
-	q.Q(config)
 
 	// Read the user-supplied configuration.
 	_, err := toml.DecodeReader(r, &config)
@@ -105,7 +100,6 @@ func (p *TritonProvider) loadConfig(r io.Reader) error {
 
 	p.platformVersion = config.PlatformVersion
 	p.operatingSystem = config.OperatingSystem
-	p.nodeName = config.NodeName
 	p.capacity.cpu = config.CPU
 	p.capacity.memory = config.Memory
 	p.capacity.storage = config.Storage

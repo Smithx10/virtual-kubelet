@@ -14,10 +14,6 @@ PlatformVersion = "LATEST"
 # Operating system for pods. Optional. Defaults to "Linux".
 OperatingSystem = "Linux"
 
-# Triton Virtual-Kubelet NodeName  // Name that appears in kubectl get nodes
-
-NodeName = "triton-vkube-0"
-
 # Triton capacity advertised by virtual-kubelet. Optional. Defaults to the values below.
 # Capacity is specified using Kubernetes resource format.
 # https://kubernetes.io/docs/concepts/configuration/manage-compute-resources-container/

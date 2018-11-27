@@ -247,7 +247,7 @@ func (p *TritonProvider) RunLiveness(tp *TritonPod) {
 				failcount++
 			}
 			if failcount == int(l.FailureThreshold) {
-				fmt.Println("FailureThreshold Hit.  Restarting the Container")
+				fmt.Println("Liveness FailureThreshold Hit.  Restarting the Container")
 				tp.pod.Status.ContainerStatuses[0].State = instanceStateToContainerState("failed")
 				tp.pod.Status.ContainerStatuses[0].LastTerminationState = instanceStateToContainerState("failed")
 				p.RestartInstance(tp)
@@ -281,14 +281,14 @@ func (p *TritonProvider) RunReadiness(tp *TritonPod) {
 				successcount++
 			}
 			if failcount == int(r.FailureThreshold) {
-				fmt.Println("FailureThreshold Hit.  Marking Container Not Ready")
+				fmt.Println("Readiness FailureThreshold Hit.  Marking Container Not Ready")
 				tp.statusLock.Lock()
 				tp.pod.Status.ContainerStatuses[0].Ready = false
 				tp.statusLock.Unlock()
 				failcount = 0
 			}
 			if successcount == int(r.SuccessThreshold) {
-				fmt.Println("SuccessThreshold Hit.  Marking Container Ready")
+				fmt.Println("Readiness SuccessThreshold Hit.  Marking Container Ready")
 				tp.statusLock.Lock()
 				tp.pod.Status.ContainerStatuses[0].Ready = true
 				tp.statusLock.Unlock()
@@ -719,6 +719,7 @@ func (p *TritonProvider) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 	fn := p.GetPodFullName(pod.Namespace, pod.Name)
 
 	// Wait for Container to be present
+
 	for {
 		if p.pods[fn] != nil {
 			break
