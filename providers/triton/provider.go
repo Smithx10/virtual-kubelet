@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -22,10 +23,12 @@ import (
 	"github.com/joyent/triton-go/compute"
 	"github.com/joyent/triton-go/network"
 	"github.com/virtual-kubelet/virtual-kubelet/manager"
+	"k8s.io/api/core/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	utilvalidation "k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/tools/remotecommand"
 )
 
@@ -96,7 +99,7 @@ func (p *TritonProvider) RestartInstance(tp *TritonPod) {
 	if tp.pod.Spec.RestartPolicy != "Never" {
 
 		// Reset the Window if we've passed the success window (5 minutes) without having to fire a restart
-		if tp.backoff.end.Add(2 * time.Minute).Before(LastTerm) {
+		if tp.backoff.end.Add(5 * time.Minute).Before(LastTerm) {
 			tp.backoff.start = time.Time{}
 		}
 		// Set the Window
@@ -471,7 +474,7 @@ func (p *TritonProvider) NewTritonPod(ctx context.Context, pod *corev1.Pod) (*Tr
 
 	// Create BackoffPolicy
 	backoff := &Backoff{
-		max:   1 * time.Minute,
+		max:   5 * time.Minute,
 		delay: 10,
 	}
 
@@ -512,9 +515,86 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	// Marshal the Pod.Spec that was recieved from the Masters and write store it on the instance.  In the event that Virtual Kubelet Crashes we can rehydrate from the tag.
 	Pod, _ := json.Marshal(pod)
 
+	var (
+		configMaps = make(map[string]*v1.ConfigMap)
+		err        error
+		secrets    = make(map[string]*v1.Secret)
+	)
+
 	// Grab env and stick it in user_data
 	var env_vars string
 	key_values := make(map[string]string)
+
+	// Handle EnvFrom
+	for _, envFrom := range pod.Spec.Containers[0].EnvFrom {
+		switch {
+		case envFrom.ConfigMapRef != nil:
+			cm := envFrom.ConfigMapRef
+			name := cm.Name
+			configMap, ok := configMaps[name]
+			if !ok {
+				optional := cm.Optional != nil && *cm.Optional
+				configMap, err = p.resourceManager.GetConfigMap(name, pod.Namespace)
+				if err != nil {
+					if optional {
+						// ignore error when marked optional
+						continue
+					}
+					return err
+				}
+				configMaps[name] = configMap
+			}
+			invalidKeys := []string{}
+			for k, v := range configMap.Data {
+				if len(envFrom.Prefix) > 0 {
+					k = envFrom.Prefix + k
+				}
+				if errMsgs := utilvalidation.IsEnvVarName(k); len(errMsgs) != 0 {
+					invalidKeys = append(invalidKeys, k)
+					continue
+				}
+				key_values[k] = v
+			}
+			if len(invalidKeys) > 0 {
+				sort.Strings(invalidKeys)
+				// Fix this with the proper event writing
+				fmt.Sprintf("InvalidEnvironmentVariableNames", "Keys [%s] from the EnvFrom configMap %s/%s were skipped since they are considered invalid environment variable names.", strings.Join(invalidKeys, ", "), pod.Namespace, name)
+			}
+		case envFrom.SecretRef != nil:
+			s := envFrom.SecretRef
+			name := s.Name
+			secret, ok := secrets[name]
+			if !ok {
+				optional := s.Optional != nil && *s.Optional
+				secret, err = p.resourceManager.GetSecret(name, pod.Namespace)
+				if err != nil {
+					if optional {
+						// ignore error when marked optional
+						continue
+					}
+					return err
+				}
+				secrets[name] = secret
+			}
+
+			invalidKeys := []string{}
+			for k, v := range secret.Data {
+				if len(envFrom.Prefix) > 0 {
+					k = envFrom.Prefix + k
+				}
+				if errMsgs := utilvalidation.IsEnvVarName(k); len(errMsgs) != 0 {
+					invalidKeys = append(invalidKeys, k)
+					continue
+				}
+				key_values[k] = string(v)
+			}
+			if len(invalidKeys) > 0 {
+				sort.Strings(invalidKeys)
+				// Fix this with the proper event writing
+				fmt.Sprintf("InvalidEnvironmentVariableNames", "Keys [%s] from the EnvFrom secret %s/%s were skipped since they are considered invalid environment variable names.", strings.Join(invalidKeys, ", "), pod.Namespace, name)
+			}
+		}
+	}
 
 	if pod.Spec.Containers[0].Env != nil {
 		for _, v := range pod.Spec.Containers[0].Env {
