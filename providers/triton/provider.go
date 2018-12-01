@@ -23,6 +23,7 @@ import (
 	"github.com/joyent/triton-go/compute"
 	"github.com/joyent/triton-go/network"
 	"github.com/virtual-kubelet/virtual-kubelet/manager"
+	"github.com/y0ssar1an/q"
 	"k8s.io/api/core/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -37,6 +38,7 @@ type TritonPod struct {
 	shutdown    context.CancelFunc
 	pod         *corev1.Pod
 	statusLock  sync.RWMutex
+	createLock  sync.RWMutex
 	probes      map[string]*TritonProbe
 	fn          string
 	backoff     *Backoff
@@ -118,6 +120,7 @@ func (p *TritonProvider) RestartInstance(tp *TritonPod) {
 		// Get Instance State
 		i, err := c.Instances().Get(tp.shutdownCtx, &compute.GetInstanceInput{ID: ContainerID})
 		if err != nil {
+			q.Q(err)
 			fmt.Println("TODO, Think about this.")
 		}
 		if i.State == "running" || i.State == "provisioning" {
@@ -512,6 +515,14 @@ func (p *TritonProvider) RunTritonPodLoops(tp *TritonPod) {
 func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	log.Printf("Received CreatePod request for %+v.\n", pod)
 
+	// Create a Triton Pod  We do this right away so if a delete comes in about this... its on the struct
+	tp, _ := p.NewTritonPod(ctx, pod)
+	// Add PodSpec to TritonPod
+	p.pods[tp.fn] = tp
+
+	q.Q(tp.fn)
+	tp.createLock.Lock()
+
 	// Marshal the Pod.Spec that was recieved from the Masters and write store it on the instance.  In the event that Virtual Kubelet Crashes we can rehydrate from the tag.
 	Pod, _ := json.Marshal(pod)
 
@@ -557,7 +568,6 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 			}
 			if len(invalidKeys) > 0 {
 				sort.Strings(invalidKeys)
-				// Fix this with the proper event writing
 				fmt.Sprintf("InvalidEnvironmentVariableNames", "Keys [%s] from the EnvFrom configMap %s/%s were skipped since they are considered invalid environment variable names.", strings.Join(invalidKeys, ", "), pod.Namespace, name)
 			}
 		case envFrom.SecretRef != nil:
@@ -590,7 +600,6 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 			}
 			if len(invalidKeys) > 0 {
 				sort.Strings(invalidKeys)
-				// Fix this with the proper event writing
 				fmt.Sprintf("InvalidEnvironmentVariableNames", "Keys [%s] from the EnvFrom secret %s/%s were skipped since they are considered invalid environment variable names.", strings.Join(invalidKeys, ", "), pod.Namespace, name)
 			}
 		}
@@ -689,7 +698,38 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 		FirewallEnabled: fwenabled,
 	})
 	if err != nil {
+		q.Q(tp.fn)
+		delete(p.pods, tp.fn)
+		tp.createLock.Unlock()
 		return err
+	}
+
+	// Block Until Triton Creates an Instance and Cache first instToPod on the TritonPod.Pod Struct
+	for {
+		running, err := c.Instances().Get(ctx, &compute.GetInstanceInput{ID: i.ID})
+		if err != nil {
+			return err
+		}
+
+		if running.State == "failed" {
+			q.Q(tp.fn)
+			delete(p.pods, tp.fn)
+			tp.createLock.Unlock()
+			return errors.New("Provisioning failed")
+		}
+
+		if running.State == "running" {
+
+			converted, err := instanceToPod(running)
+			if err != nil {
+				return err
+			}
+			p.pods[tp.fn].pod = converted
+			// Run the Routines
+			p.RunTritonPodLoops(tp)
+			break
+		}
+		time.Sleep(2 * time.Second)
 	}
 
 	// Apply Firewall Rules for Ports Specified
@@ -755,33 +795,7 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 		}
 	}
 
-	// Block Until Triton Creates an Instance and Cache first instToPod on the TritonPod.Pod Struct
-	for {
-		running, err := c.Instances().Get(ctx, &compute.GetInstanceInput{ID: i.ID})
-		if err != nil {
-			return err
-		}
-
-		if running.State == "failed" {
-			return errors.New("Provisioning failed")
-		}
-
-		if running.State == "running" {
-
-			converted, err := instanceToPod(running)
-			if err != nil {
-				return err
-			}
-			tp, _ := p.NewTritonPod(ctx, converted)
-			// Add PodSpec to TritonPod
-			p.pods[tp.fn] = tp
-			p.pods[tp.fn].pod = converted
-			// Run the Routines
-			p.RunTritonPodLoops(tp)
-			break
-		}
-		time.Sleep(2 * time.Second)
-	}
+	tp.createLock.Unlock()
 
 	fmt.Sprintf("Created: " + i.Name)
 	return nil
@@ -798,34 +812,34 @@ func (p *TritonProvider) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 	log.Printf("Received DeletePod request for %s/%s.\n", pod.Namespace, pod.Name)
 	fn := p.GetPodFullName(pod.Namespace, pod.Name)
 
-	// Wait for Container to be present
-
-	for {
-		if p.pods[fn] != nil {
-			break
-		}
-		time.Sleep(1 * time.Second)
+	// initial check to see if CreatePod added the TritonPod
+	tp, ok := p.pods[fn]
+	if !ok {
+		fmt.Sprintf("The instance: %s has already been deleted,  failed to provision properly, or is unknown to Virtual Kubelet")
+		return nil
 	}
 
-	ContainerID := p.pods[fn].pod.Status.ContainerStatuses[0].ContainerID
+	// Grab a lock if so
+	tp.createLock.Lock()
+
+	// If a provision fails in CreatePod, it will remove itself from the top p.pods.  So lets check again.
+	tp, ok = p.pods[fn]
+	if !ok {
+		fmt.Sprintf("The instance: %s has already been deleted,  failed to provision properly, or is unknown to Virtual Kubelet")
+		return nil
+	}
+
+	// Acquire the ContainerID that will be used for deletions :)
+	ContainerID := tp.pod.Status.ContainerStatuses[0].ContainerID
 
 	c, err := p.client.Compute()
 	if err != nil {
 		return err
 	}
 
-	p.pods[fn].shutdown()
+	tp.shutdown()
 	// Delete Instance
-	for {
-		_, err := c.Instances().Get(ctx, &compute.GetInstanceInput{ID: ContainerID})
-		if err != nil {
-			time.Sleep(1 * time.Second)
-			break
-		}
-
-		c.Instances().Delete(ctx, &compute.DeleteInstanceInput{ID: ContainerID})
-		time.Sleep(1 * time.Second)
-	}
+	c.Instances().Delete(ctx, &compute.DeleteInstanceInput{ID: ContainerID})
 
 	// Delete FW Rules
 	n, err := p.client.Network()
@@ -846,7 +860,7 @@ func (p *TritonProvider) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 		}
 	}
 
-	fwgroup := p.pods[fn].pod.Annotations["fwgroup"]
+	fwgroup := tp.pod.Annotations["fwgroup"]
 	//Get fw rules from the Instance
 	// Iterate over and delete them
 	for _, v := range filteredRules {
@@ -866,6 +880,7 @@ func (p *TritonProvider) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 		}
 	}
 
+	tp.createLock.Unlock()
 	delete(p.pods, fn)
 
 	return nil
