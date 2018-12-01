@@ -40,6 +40,8 @@ type TritonPod struct {
 	statusLock  sync.RWMutex
 	createLock  sync.RWMutex
 	probes      map[string]*TritonProbe
+	fwrules     []*network.FirewallRule
+	fwgroup     string
 	fn          string
 	backoff     *Backoff
 }
@@ -120,7 +122,6 @@ func (p *TritonProvider) RestartInstance(tp *TritonPod) {
 		// Get Instance State
 		i, err := c.Instances().Get(tp.shutdownCtx, &compute.GetInstanceInput{ID: ContainerID})
 		if err != nil {
-			q.Q(err)
 			fmt.Println("TODO, Think about this.")
 		}
 		if i.State == "running" || i.State == "provisioning" {
@@ -520,7 +521,6 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	// Add PodSpec to TritonPod
 	p.pods[tp.fn] = tp
 
-	q.Q(tp.fn)
 	tp.createLock.Lock()
 
 	// Marshal the Pod.Spec that was recieved from the Masters and write store it on the instance.  In the event that Virtual Kubelet Crashes we can rehydrate from the tag.
@@ -698,7 +698,6 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 		FirewallEnabled: fwenabled,
 	})
 	if err != nil {
-		q.Q(tp.fn)
 		delete(p.pods, tp.fn)
 		tp.createLock.Unlock()
 		return err
@@ -712,7 +711,6 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 		}
 
 		if running.State == "failed" {
-			q.Q(tp.fn)
 			delete(p.pods, tp.fn)
 			tp.createLock.Unlock()
 			return errors.New("Provisioning failed")
@@ -745,11 +743,12 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 		if err != nil {
 			return err
 		}
-		_, err = n.Firewall().CreateRule(ctx, &network.CreateRuleInput{
+		rule, err := n.Firewall().CreateRule(ctx, &network.CreateRuleInput{
 			Rule:        fmt.Sprintf("FROM any TO vm %s ALLOW %s PORT %d", i.ID, strings.ToLower(string(v.Protocol)), v.ContainerPort),
 			Enabled:     true,
 			Description: fmt.Sprintf("Set by K8S for service: %s", string(v.Name)),
 		})
+		tp.fwrules = append(tp.fwrules, rule)
 	}
 
 	// If first Pod in the fwgroup, Create the NameSpace Firewall Rules
@@ -773,7 +772,7 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 
 		if tcpRuleExist != true {
 			// TCP
-			_, err = n.Firewall().CreateRule(ctx, &network.CreateRuleInput{
+			rule, err := n.Firewall().CreateRule(ctx, &network.CreateRuleInput{
 				Rule:        fmt.Sprintf("FROM tag k8s_" + fwgroup + " TO tag k8s_" + fwgroup + " ALLOW tcp PORT all"),
 				Enabled:     true,
 				Description: fmt.Sprintf("Set by K8S for Pods in the FW Zone: k8s_", fwgroup),
@@ -781,10 +780,11 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 			if err != nil {
 				return err
 			}
+			tp.fwrules = append(tp.fwrules, rule)
 		}
 		if udpRuleExist != true {
 			// UDP
-			_, err = n.Firewall().CreateRule(ctx, &network.CreateRuleInput{
+			rule, err := n.Firewall().CreateRule(ctx, &network.CreateRuleInput{
 				Rule:        fmt.Sprintf("FROM tag k8s_" + fwgroup + " TO tag k8s_" + fwgroup + " ALLOW udp PORT all"),
 				Enabled:     true,
 				Description: fmt.Sprintf("Set by K8S for Pods in the FW Zone: k8s_", fwgroup),
@@ -792,8 +792,11 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 			if err != nil {
 				return err
 			}
+			tp.fwrules = append(tp.fwrules, rule)
 		}
 	}
+
+	q.Q(tp.fwrules)
 
 	tp.createLock.Unlock()
 
@@ -847,36 +850,21 @@ func (p *TritonProvider) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 		return err
 	}
 
-	// Get Instance Rules
-	rules, err := n.Firewall().ListMachineRules(ctx, &network.ListMachineRulesInput{MachineID: ContainerID})
-	if err != nil {
-		fmt.Println(err)
-	}
-
-	var filteredRules []*network.FirewallRule
-	for _, v := range rules {
-		if strings.Contains(v.Description, "Set by K8S") {
-			filteredRules = append(filteredRules, v)
-		}
-	}
-
+	// Get the Firewall Group
 	fwgroup := tp.pod.Annotations["fwgroup"]
-	//Get fw rules from the Instance
+
 	// Iterate over and delete them
-	for _, v := range filteredRules {
-		machines, err := n.Firewall().ListRuleMachines(ctx, &network.ListRuleMachinesInput{ID: v.ID})
-		if err != nil {
-			fmt.Println(err)
-		}
-		if len(machines) == 0 || machines == nil {
-			if strings.Contains(v.Description, fwgroup) {
-				err = n.Firewall().DeleteRule(ctx, &network.DeleteRuleInput{ID: v.ID})
+	for _, v := range tp.fwrules {
+		if strings.Contains(v.Rule, fwgroup) {
+			m, err := n.Firewall().ListRuleMachines(ctx, &network.ListRuleMachinesInput{ID: v.ID})
+			if err != nil {
+				fmt.Println("Uh Oh")
 			}
-		}
-		if len(machines) == 1 || len(machines) == 0 || machines == nil {
-			if !strings.Contains(v.Description, fwgroup) {
-				err = n.Firewall().DeleteRule(ctx, &network.DeleteRuleInput{ID: v.ID})
+			if len(m) <= 1 {
+				n.Firewall().DeleteRule(ctx, &network.DeleteRuleInput{ID: v.ID})
 			}
+		} else {
+			n.Firewall().DeleteRule(ctx, &network.DeleteRuleInput{ID: v.ID})
 		}
 	}
 
