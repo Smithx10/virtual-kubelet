@@ -33,6 +33,7 @@ import (
 	"k8s.io/client-go/tools/remotecommand"
 )
 
+// Triton Pod Struct
 type TritonPod struct {
 	shutdownCtx context.Context
 	shutdown    context.CancelFunc
@@ -40,19 +41,74 @@ type TritonPod struct {
 	statusLock  sync.RWMutex
 	createLock  sync.RWMutex
 	probes      map[string]*TritonProbe
-	fwrules     []*network.FirewallRule
-	fwgroup     string
+	fwrs        []*network.FirewallRule
 	fn          string
 	backoff     *Backoff
 }
 
-// Replace with
+// Backoff Struct
 type Backoff struct {
 	max       time.Duration
 	delay     int
 	delayLock sync.RWMutex
 	start     time.Time
 	end       time.Time
+}
+
+// Triton Probe Struct
+type TritonProbe struct {
+	TargetIP            string
+	Exec                *corev1.ExecAction
+	HTTPGet             *corev1.HTTPGetAction
+	TCPSocket           *corev1.TCPSocketAction
+	InitialDelaySeconds int32
+	Period              int32
+	FailureThreshold    int32
+	SuccessThreshold    int32
+	TimeoutSeconds      int32
+}
+
+type TritonFWGroup struct {
+	// Question:  Would it be preferable to reuse the *triton.Pod,  and point to that alot or just use a string?
+	members     []string
+	membersLock sync.RWMutex
+	fwrs        []*network.FirewallRule
+}
+
+// TritonProvider implements the virtual-kubelet provider interface.
+type TritonProvider struct {
+	//pods map[*corev1.Pod]map[string]*TritonProbe
+	daemonEndpointPort int32
+	internalIP         string
+	nodeName           string
+	operatingSystem    string
+	resourceManager    *manager.ResourceManager
+
+	// Triton Specific
+	client *Client
+	fwgs   map[string]*TritonFWGroup
+	pods   map[string]*TritonPod
+
+	// Triton resources.
+	capacity           capacity
+	platformVersion    string
+	lastTransitionTime time.Time
+}
+
+// Capacity represents the provisioned capacity on a Triton cluster.
+type capacity struct {
+	cpu     string
+	memory  string
+	storage string
+	pods    string
+}
+
+func (p *TritonProvider) NewTritonFWGroup() *TritonFWGroup {
+	fwg := &TritonFWGroup{
+		members: make([]string, 0),
+		fwrs:    make([]*network.FirewallRule, 0),
+	}
+	return fwg
 }
 
 func (p *TritonProvider) GetInstStatus(tp *TritonPod) {
@@ -171,18 +227,6 @@ func (p *TritonProvider) FailInstance(tp *TritonPod, LastTerm time.Time) {
 		},
 	})
 	tp.shutdown()
-}
-
-type TritonProbe struct {
-	TargetIP            string
-	Exec                *corev1.ExecAction
-	HTTPGet             *corev1.HTTPGetAction
-	TCPSocket           *corev1.TCPSocketAction
-	InitialDelaySeconds int32
-	Period              int32
-	FailureThreshold    int32
-	SuccessThreshold    int32
-	TimeoutSeconds      int32
 }
 
 func (p *TritonProvider) NewTritonProbe(ip string, probe *corev1.Probe) (*TritonProbe, error) {
@@ -306,32 +350,6 @@ func (p *TritonProvider) RunReadiness(tp *TritonPod) {
 	}
 }
 
-// TritonProvider implements the virtual-kubelet provider interface.
-type TritonProvider struct {
-	//pods map[*corev1.Pod]map[string]*TritonProbe
-	pods               map[string]*TritonPod
-	resourceManager    *manager.ResourceManager
-	nodeName           string
-	operatingSystem    string
-	internalIP         string
-	daemonEndpointPort int32
-
-	client *Client
-
-	// Triton resources.
-	capacity           capacity
-	platformVersion    string
-	lastTransitionTime time.Time
-}
-
-// Capacity represents the provisioned capacity on a Triton cluster.
-type capacity struct {
-	cpu     string
-	memory  string
-	storage string
-	pods    string
-}
-
 var (
 	errNotImplemented = fmt.Errorf("not implemented by Triton provider")
 )
@@ -415,6 +433,7 @@ func NewTritonProvider(
 
 	p := TritonProvider{
 		pods:               make(map[string]*TritonPod),
+		fwgs:               make(map[string]*TritonFWGroup),
 		resourceManager:    rm,
 		nodeName:           nodeName,
 		operatingSystem:    operatingSystem,
@@ -748,55 +767,49 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 			Enabled:     true,
 			Description: fmt.Sprintf("Set by K8S for service: %s", string(v.Name)),
 		})
-		tp.fwrules = append(tp.fwrules, rule)
+		tp.fwrs = append(tp.fwrs, rule)
 	}
 
-	// If first Pod in the fwgroup, Create the NameSpace Firewall Rules
+	// If first Pod in the fwgroup, Create the fwgroup Firewall Rules
 	if pod.ObjectMeta.Annotations["fwgroup"] != "" {
-		fwgroup := pod.ObjectMeta.Annotations["fwgroup"]
+		fwg := pod.ObjectMeta.Annotations["fwgroup"]
+
 		n, err := p.client.Network()
 		if err != nil {
 			return err
 		}
-		var tcpRuleExist bool
-		var udpRuleExist bool
-		rules, err := n.Firewall().ListRules(ctx, &network.ListRulesInput{})
-		for _, v := range rules {
-			if v.Rule == fmt.Sprintf("FROM tag \"k8s_"+fwgroup+"\" TO tag \"k8s_"+fwgroup+"\" ALLOW tcp PORT all") {
-				tcpRuleExist = true
+
+		// Create Firewall Group if Doesn't exist
+		if p.fwgs[fwg] == nil {
+			p.fwgs[fwg] = p.NewTritonFWGroup()
+
+			// Create a TCP Rule for the FWG
+			rule, err := n.Firewall().CreateRule(ctx, &network.CreateRuleInput{
+				Rule:        fmt.Sprintf("FROM tag k8s_" + fwg + " TO tag k8s_" + fwg + " ALLOW tcp PORT all"),
+				Enabled:     true,
+				Description: fmt.Sprintf("Set by K8S for Pods in the FW Zone: k8s_", fwg),
+			})
+			if err != nil {
+				return err
 			}
-			if v.Rule == fmt.Sprintf("FROM tag \"k8s_"+fwgroup+"\" TO tag \"k8s_"+fwgroup+"\" ALLOW udp PORT all") {
-				udpRuleExist = true
+			p.fwgs[fwg].fwrs = append(p.fwgs[fwg].fwrs, rule)
+
+			// Create a UDP Rule for the FWG
+			rule, err = n.Firewall().CreateRule(ctx, &network.CreateRuleInput{
+				Rule:        fmt.Sprintf("FROM tag k8s_" + fwg + " TO tag k8s_" + fwg + " ALLOW udp PORT all"),
+				Enabled:     true,
+				Description: fmt.Sprintf("Set by K8S for Pods in the FW Zone: k8s_", fwg),
+			})
+			if err != nil {
+				return err
 			}
+			p.fwgs[fwg].fwrs = append(p.fwgs[fwg].fwrs, rule)
 		}
 
-		if tcpRuleExist != true {
-			// TCP
-			rule, err := n.Firewall().CreateRule(ctx, &network.CreateRuleInput{
-				Rule:        fmt.Sprintf("FROM tag k8s_" + fwgroup + " TO tag k8s_" + fwgroup + " ALLOW tcp PORT all"),
-				Enabled:     true,
-				Description: fmt.Sprintf("Set by K8S for Pods in the FW Zone: k8s_", fwgroup),
-			})
-			if err != nil {
-				return err
-			}
-			tp.fwrules = append(tp.fwrules, rule)
-		}
-		if udpRuleExist != true {
-			// UDP
-			rule, err := n.Firewall().CreateRule(ctx, &network.CreateRuleInput{
-				Rule:        fmt.Sprintf("FROM tag k8s_" + fwgroup + " TO tag k8s_" + fwgroup + " ALLOW udp PORT all"),
-				Enabled:     true,
-				Description: fmt.Sprintf("Set by K8S for Pods in the FW Zone: k8s_", fwgroup),
-			})
-			if err != nil {
-				return err
-			}
-			tp.fwrules = append(tp.fwrules, rule)
-		}
+		// Add Pod as Member
+		p.fwgs[fwg].members = append(p.fwgs[fwg].members, tp.fn)
+
 	}
-
-	q.Q(tp.fwrules)
 
 	tp.createLock.Unlock()
 
@@ -835,14 +848,26 @@ func (p *TritonProvider) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 	// Acquire the ContainerID that will be used for deletions :)
 	ContainerID := tp.pod.Status.ContainerStatuses[0].ContainerID
 
+	// Create the Connection
 	c, err := p.client.Compute()
 	if err != nil {
 		return err
 	}
 
+	// Shutdown the Context
 	tp.shutdown()
+
 	// Delete Instance
 	c.Instances().Delete(ctx, &compute.DeleteInstanceInput{ID: ContainerID})
+
+	// Confirm Deletion
+	for {
+		_, err := c.Instances().Get(ctx, &compute.GetInstanceInput{ID: ContainerID})
+		if err != nil {
+			break
+		}
+		time.Sleep(2 * time.Second)
+	}
 
 	// Delete FW Rules
 	n, err := p.client.Network()
@@ -850,22 +875,31 @@ func (p *TritonProvider) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 		return err
 	}
 
-	// Get the Firewall Group
-	fwgroup := tp.pod.Annotations["fwgroup"]
+	// See if we need to delete the wgroup
+	fwg := tp.pod.Annotations["fwgroup"]
 
-	// Iterate over and delete them
-	for _, v := range tp.fwrules {
-		if strings.Contains(v.Rule, fwgroup) {
-			m, err := n.Firewall().ListRuleMachines(ctx, &network.ListRuleMachinesInput{ID: v.ID})
-			if err != nil {
-				fmt.Println("Uh Oh")
+	if fwg != "" {
+		p.fwgs[fwg].membersLock.Lock()
+		for k, v := range p.fwgs[fwg].members {
+			q.Q(k, v)
+			if v == tp.fn {
+				p.fwgs[fwg].members[k] = p.fwgs[fwg].members[len(p.fwgs[fwg].members)-1]
+				p.fwgs[fwg].members[len(p.fwgs[fwg].members)-1] = ""
+				p.fwgs[fwg].members = p.fwgs[fwg].members[:len(p.fwgs[fwg].members)-1]
 			}
-			if len(m) <= 1 {
+		}
+		p.fwgs[fwg].membersLock.Unlock()
+
+		if len(p.fwgs[fwg].members) == 0 {
+			for _, v := range p.fwgs[fwg].fwrs {
 				n.Firewall().DeleteRule(ctx, &network.DeleteRuleInput{ID: v.ID})
 			}
-		} else {
-			n.Firewall().DeleteRule(ctx, &network.DeleteRuleInput{ID: v.ID})
 		}
+	}
+
+	// Iterate over TritonPod Rules and delete them
+	for _, v := range tp.fwrs {
+		n.Firewall().DeleteRule(ctx, &network.DeleteRuleInput{ID: v.ID})
 	}
 
 	tp.createLock.Unlock()
