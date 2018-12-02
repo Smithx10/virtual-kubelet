@@ -84,7 +84,7 @@ sudo chown -R $USER $HOME/.minikube
 sudo chgrp -R $USER $HOME/.minikube
 ```
 #### VK-Triton:
-- We will run VK-Triton on the Minikube server under no colliding ports.
+- We will run VK-Triton on the Minikube server by changing the Metrics and Kubelet ports.
 ```  bash
 ### Curl virtual-kubelet binary that contains the triton-provider 
 curl -OL https://github.com/Smithx10/virtual-kubelet/releases/download/alpha/virtual-kubelet-triton-alpha.tar.gz
