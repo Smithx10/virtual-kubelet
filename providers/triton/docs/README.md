@@ -35,15 +35,6 @@ In Kubernetes v1.0, Services are a “layer 4” (TCP/UDP over IP) construct, th
 To understand the differences I'd suggest reading [Kubernetes Networking](https://kubernetes.io/docs/concepts/services-networking/), and [Triton Networking](https://docs.joyent.com/private-cloud/networks/sdn)  An aside here is that not all Kubernetes plugins behave the same,   At the time of writing this there are over **15** Kubernetes Networking Solutions listed [here](https://kubernetes.io/docs/concepts/cluster-administration/networking/).   Your milage may vary.
 
 
-### ToDo DNS
-
-### ToDo: Storage 
-
-### ToDo Configuration  & Secrets 
-
-### ToDo Policies
-
-
 ## Getting Started
 #### Pre-Requisites: 
 - [**Triton Account**](https://www.joyent.com/getting-started)  
