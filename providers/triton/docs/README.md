@@ -20,16 +20,16 @@ A pod (as in a pod of whales or pea pod) is a group of one or more containers (s
 ### Services, Load Balancing, and Networking
 **Problem Statement**: Kubernetes Pods are mortal. They are born and when they die, they are not resurrected. ReplicaSets in particular create and destroy Pods dynamically (e.g. when scaling out or in). While each Pod gets its own IP address, even those IP addresses cannot be relied upon to be stable over time. This leads to a problem: if some set of Pods (let’s call them backends) provides functionality to other Pods (let’s call them frontends) inside the Kubernetes cluster, how do those frontends find out and keep track of which backends are in that set?
 
-** Kubernetes Definitions**:    
+**Kubernetes Definitions**:    
 - **Services**:  A Kubernetes Service is an abstraction which defines a logical set of Pods and a policy by which to access them - sometimes called a micro-service. The set of Pods targeted by a Service is (usually) determined by a Label Selector (see below for why you might want a Service without a selector)**
-- ** VIPs and Service Proxies**: 
+- **VIPs and Service Proxies**: 
 Every node in a Kubernetes cluster runs a kube-proxy. kube-proxy is responsible for implementing a form of virtual IP for Services of type other than ExternalName.
 In Kubernetes v1.0, Services are a “layer 4” (TCP/UDP over IP) construct, the proxy was purely in userspace. In Kubernetes v1.1, the Ingress API was added (beta) to represent “layer 7”(HTTP) services, iptables proxy was added too, and became the default operating mode since Kubernetes v1.2. In Kubernetes v1.8.0-beta.0, ipvs proxy was added.
 
 
 ** Triton Provider Definition ** :
-- ** Sevices**:   Triton Pods (aka instances) do not suffer from the same inability to provision containers directly on different layer 2 fabrics, and layer 3 networks.  Thus do not require the same abstraction in order to route traffic to them.     Load balancing should be handled by the Operator or Application developer at this time and not the scheduler.
--  ** VIPs and Service Proxies**:   As stated in Mission,  "_The Primary Focus of this Provider is not to implement the entire Kubernetes EcoSystem, but just the features around managing the lifecycle of instances. _".  Given that Triton Pods can have interfaces which reside on both an Overlay and ToR (_Top of Rack_)  Network,  Load Balancing and/or Proxying  is simplified and owned by Operator or Application developer not the scheduler. 
+- **Sevices**:   Triton Pods (aka instances) do not suffer from the same inability to provision containers directly on different layer 2 fabrics, and layer 3 networks.  Thus do not require the same abstraction in order to route traffic to them.     Load balancing should be handled by the Operator or Application developer at this time and not the scheduler.
+-  **VIPs and Service Proxies**:   As stated in Mission,  "_The Primary Focus of this Provider is not to implement the entire Kubernetes EcoSystem, but just the features around managing the lifecycle of instances_".  Given that Triton Pods can have interfaces which reside on both an Overlay and ToR (_Top of Rack_)  Network,  Load Balancing and/or Proxying  is simplified and owned by Operator or Application developer not the scheduler. 
 
 To understand the differences I'd suggest reading [Kubernetes Networking](https://kubernetes.io/docs/concepts/services-networking/), and [Triton Networking](https://docs.joyent.com/private-cloud/networks/sdn)  An aside here is that not all Kubernetes plugins behave the same,   At the time of writing this there are over **15** Kubernetes Networking Solutions listed [here](https://kubernetes.io/docs/concepts/cluster-administration/networking/).   Your milage may vary.
 
