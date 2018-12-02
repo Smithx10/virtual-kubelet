@@ -5,7 +5,7 @@ Currently scheduling instances ( Bhyve, KVM, LX, SmartOS ) is very much in the h
  Tooling such as [Terraform](/docs/providers/triton), [Triton-CLI](https://github.com/joyent/node-triton), and [Pulumi](https://pulumi.io/) exist but do not implement the "Auto Scaling Group" feature set that users are familiar with on other platforms. 
 In theory [Kubernetes](http://kubernetes.io) and the [Virtual-Kubelet](https://github.com/virtual-kubelet/virtual-kubelet) Triton Provider will fill this need for a scheduler that runs against the [Triton Cloud-API](https://github.com/joyent/sdc-cloudapi/).
 
-The Primary Focus of this Provider is not to implement the entire Kubernetes EcoSystem, but just the features around managing the lifecycle of instances.  Features outside of this will be considered 2nd class to me, but are definitely welcome if they do not infringe on the primary mission of managing instances.  
+The Primary Focus of this Provider is not to implement the entire Kubernetes EcoSystem, but just the features around managing the lifecycle of instances.  Features outside of this will be considered 2nd class, but are definitely welcome if they do not infringe on the primary mission of managing instances.  
 
 I hope in the next few sections of this document to describe the state of what exists, its differences, and the reasons why they differ.
 
