@@ -23,7 +23,6 @@ import (
 	"github.com/joyent/triton-go/compute"
 	"github.com/joyent/triton-go/network"
 	"github.com/virtual-kubelet/virtual-kubelet/manager"
-	"github.com/y0ssar1an/q"
 	"k8s.io/api/core/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -881,7 +880,6 @@ func (p *TritonProvider) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 	if fwg != "" {
 		p.fwgs[fwg].membersLock.Lock()
 		for k, v := range p.fwgs[fwg].members {
-			q.Q(k, v)
 			if v == tp.fn {
 				p.fwgs[fwg].members[k] = p.fwgs[fwg].members[len(p.fwgs[fwg].members)-1]
 				p.fwgs[fwg].members[len(p.fwgs[fwg].members)-1] = ""
