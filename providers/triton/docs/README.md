@@ -1,7 +1,7 @@
 
 ## Virtual-Kubelet: Triton Provider.
 ## Mission:
-Currently scheduling instances ( Bhyve, KVM, LX, SmartOS ) is very much in the hands of the user.  
+Currently scheduling instances ( Bhyve, KVM, LX, SmartOS ) on Triton is very much in the hands of the user.  
  Tooling such as [Terraform](/docs/providers/triton), [Triton-CLI](https://github.com/joyent/node-triton), and [Pulumi](https://pulumi.io/) exist but do not solve the "Auto Scaling Groups" feature set that users are used to using. 
 In theory [Kubernetes](http://kubernetes.io) and the [Virtual-Kubelet](https://github.com/virtual-kubelet/virtual-kubelet) Triton Provider will fill this need for a scheduler that runs against the [Triton Cloud-API](https://github.com/joyent/sdc-cloudapi/).
 
