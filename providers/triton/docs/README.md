@@ -27,7 +27,7 @@ Every node in a Kubernetes cluster runs a kube-proxy. kube-proxy is responsible 
 In Kubernetes v1.0, Services are a “layer 4” (TCP/UDP over IP) construct, the proxy was purely in userspace. In Kubernetes v1.1, the Ingress API was added (beta) to represent “layer 7”(HTTP) services, iptables proxy was added too, and became the default operating mode since Kubernetes v1.2. In Kubernetes v1.8.0-beta.0, ipvs proxy was added.
 
 
-** Triton Provider Definition ** :
+**Triton Provider Definitions** :
 - **Sevices**:   Triton Pods (aka instances) do not suffer from the same inability to provision containers directly on different layer 2 fabrics, and layer 3 networks.  Thus do not require the same abstraction in order to route traffic to them.     Load balancing should be handled by the Operator or Application developer at this time and not the scheduler.
 -  **VIPs and Service Proxies**:   As stated in Mission,  "_The Primary Focus of this Provider is not to implement the entire Kubernetes EcoSystem, but just the features around managing the lifecycle of instances_".  Given that Triton Pods can have interfaces which reside on both an Overlay and ToR (_Top of Rack_)  Network,  Load Balancing and/or Proxying  is simplified and owned by Operator or Application developer not the scheduler. 
 
@@ -50,7 +50,7 @@ To understand the differences I'd suggest reading [Kubernetes Networking](https:
 - **VK-Triton**
 
 #### Minikube:  
-- We will  install Minikube on a Ubuntu 18.04 VM.
+- We will install Minikube on a Ubuntu 18.04 VM.
 ``` bash 
 ### Create Ubuntu 18.04 VM
 tt create ac99517a-72ac-44c0-90e6-c7ce3d944a0a 840e0bb3-e7f6-6225-ebe2-c09cf326f0f8 -N My-Fabric-Network -N sdc_nat -n minikube
