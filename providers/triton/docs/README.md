@@ -18,7 +18,7 @@ A pod (as in a pod of whales or pea pod) is a group of one or more containers (s
 
 
 
-### Services, Load Balancing, and Networking
+## Services, Load Balancing, and Networking:
 **Problem Statement**: Kubernetes Pods are mortal. They are born and when they die, they are not resurrected. ReplicaSets in particular create and destroy Pods dynamically (e.g. when scaling out or in). While each Pod gets its own IP address, even those IP addresses cannot be relied upon to be stable over time. This leads to a problem: if some set of Pods (let’s call them backends) provides functionality to other Pods (let’s call them frontends) inside the Kubernetes cluster, how do those frontends find out and keep track of which backends are in that set?
 
 **Kubernetes Definitions**:    
@@ -35,13 +35,13 @@ In Kubernetes v1.0, Services are a “layer 4” (TCP/UDP over IP) construct, th
 To understand the differences I'd suggest reading [Kubernetes Networking](https://kubernetes.io/docs/concepts/services-networking/), and [Triton Networking](https://docs.joyent.com/private-cloud/networks/sdn)  An aside here is that not all Kubernetes plugins behave the same,   At the time of writing this there are over **15** Kubernetes Networking Solutions listed [here](https://kubernetes.io/docs/concepts/cluster-administration/networking/).   Your milage may vary.
 
 
-### ToDo DNS
+## ToDo DNS
 
-### ToDo: Storage 
+## ToDo: Storage 
 
-### ToDo Configuration  & Secrets 
+## ToDo Configuration  & Secrets 
 
-### ToDo Policies
+## ToDo Policies
 
 
 
