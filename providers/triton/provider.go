@@ -23,6 +23,7 @@ import (
 	"github.com/joyent/triton-go/compute"
 	"github.com/joyent/triton-go/network"
 	"github.com/virtual-kubelet/virtual-kubelet/manager"
+	"github.com/y0ssar1an/q"
 	"k8s.io/api/core/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -179,6 +180,7 @@ func (p *TritonProvider) RestartInstance(tp *TritonPod) {
 		if err != nil {
 			fmt.Println("TODO, Think about this.")
 		}
+
 		if i.State == "running" || i.State == "provisioning" {
 			// Restart the Instance
 			c.Instances().Reboot(tp.shutdownCtx, &compute.RebootInstanceInput{InstanceID: ContainerID})
@@ -624,11 +626,20 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	}
 
 	if pod.Spec.Containers[0].Env != nil {
+		invalidKeys := []string{}
 		for _, v := range pod.Spec.Containers[0].Env {
+			if errMsgs := utilvalidation.IsEnvVarName(v.Name); len(errMsgs) != 0 {
+				invalidKeys = append(invalidKeys, v.Name)
+				continue
+			}
 			key_values[v.Name] = v.Value
 		}
 		environment, _ := json.Marshal(key_values)
 		env_vars = string(environment)
+		if len(invalidKeys) > 0 {
+			sort.Strings(invalidKeys)
+			fmt.Sprintf("InvalidEnvironmentVariableNames", "Keys [%s] from the EnvFrom secret %s/%s were skipped since they are considered invalid environment variable names.", strings.Join(invalidKeys, ", "), pod.Namespace, pod.Name)
+		}
 	} else {
 		env_vars = "\"unset\""
 	}
@@ -652,7 +663,7 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 
 	// Build Tags: firewall group
 	if pod.ObjectMeta.Annotations["fwgroup"] != "" {
-		tags["k8s_"+pod.ObjectMeta.Annotations["fwgroup"]] = "true"
+		tags["k8s_fwgroup"] = pod.ObjectMeta.Annotations["fwgroup"]
 	}
 	// Firewall Enabled
 	var fwenabled bool
@@ -735,7 +746,6 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 		}
 
 		if running.State == "running" {
-
 			converted, err := instanceToPod(running)
 			if err != nil {
 				return err
@@ -779,6 +789,7 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 		}
 
 		// Create Firewall Group if Doesn't exist
+		q.Q(p.fwgs[fwg])
 		if p.fwgs[fwg] == nil {
 			p.fwgs[fwg] = p.NewTritonFWGroup()
 
@@ -957,6 +968,7 @@ func (p *TritonProvider) GetPodStatus(ctx context.Context, namespace, name strin
 func (p *TritonProvider) GetPods(ctx context.Context) ([]*corev1.Pod, error) {
 	log.Println("Received GetPods request.")
 
+	// Get Instances created by k8s on triton to repopulate the triton pods struct
 	c, err := p.client.Compute()
 	if err != nil {
 		return nil, err
@@ -973,6 +985,18 @@ func (p *TritonProvider) GetPods(ctx context.Context) ([]*corev1.Pod, error) {
 	// Create Pods Array
 	pods := make([]*corev1.Pod, 0, len(is))
 	for _, i := range is {
+
+		// Repopulate all the firewall groups
+		if i.Tags["k8s_fwgroup"] != nil {
+			fwg := fmt.Sprint(i.Tags["k8s_fwgroup"])
+			if p.fwgs[fwg] == nil {
+				p.fwgs[fwg] = p.NewTritonFWGroup()
+			}
+			members := p.fwgs[fwg].members
+			members = append(members, fmt.Sprintf("%s/%s", i.Tags["k8s_namespace"], i.Name))
+		}
+
+		// Convert Triton Instance to Pod
 		converted, err := instanceToPod(i)
 		if err != nil {
 			return nil, err
@@ -987,6 +1011,26 @@ func (p *TritonProvider) GetPods(ctx context.Context) ([]*corev1.Pod, error) {
 		// Run Loops
 		p.RunTritonPodLoops(tp)
 	}
+
+	// Get FWGroup Rules on triton to repopulate the triton fwgs struct
+	n, err := p.client.Network()
+	if err != nil {
+		return nil, err
+	}
+
+	rules, err := n.Firewall().ListRules(ctx, &network.ListRulesInput{})
+	if err != nil {
+		return nil, err
+	}
+
+	for k, _ := range p.fwgs {
+		for _, r := range rules {
+			if strings.Contains(r.Description, "Set by K8S for Pods in the FW Zone: k8s_") {
+				p.fwgs[k].fwrs = append(p.fwgs[k].fwrs, r)
+			}
+		}
+	}
+
 	return pods, nil
 }
 
