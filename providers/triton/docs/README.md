@@ -131,6 +131,7 @@ spec:
       annotations:
         package: b87c2a29-6b6a-6d19-ea65-aa81e680002c # Triton Package UUID
         networks: "17d7aa50-6ad9-4e56-93b7-12dc868fac2a, a0ae9499-b476-4fef-9861-d0c25029378d" # Triton Package UUIDs
+        affinity: container==bastion
         fwgroup: ubuntu  # Arbitrary Name for the Interal FW Group
         fwenabled: "true" # Enable FW on Deployment
       labels:
