@@ -366,6 +366,7 @@ This manifest results in the following provisioned instance:
 ```
 
 With the following Firewall Rules:
+
 _note: any TO vm PORT 22 and 8500 were the defined ports, and the fwgroup was applied as k8s_consul_  
 ``` bash
 /g/i/consul ❯❯❯ triton fwrules                                                                                                                                                                                                                                                                                                                                                                                                  k8s ✱ ◼
