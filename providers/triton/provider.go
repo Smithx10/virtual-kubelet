@@ -23,6 +23,7 @@ import (
 	"github.com/joyent/triton-go/compute"
 	"github.com/joyent/triton-go/network"
 	"github.com/virtual-kubelet/virtual-kubelet/manager"
+	"github.com/y0ssar1an/q"
 	"k8s.io/api/core/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -264,11 +265,11 @@ func (p *TritonProvider) RunProbe(probe *TritonProbe) error {
 			Timeout: time.Duration(time.Duration(probe.TimeoutSeconds) * time.Second),
 		}
 		r, err := client.Get(fmt.Sprintf("http://%s:%d%s", probe.TargetIP, probe.HTTPGet.Port.IntVal, probe.HTTPGet.Path))
-		//r, err := http.Get(fmt.Sprintf("http://%s:%d%s", probe.TargetIP, probe.HTTPGet.Port.IntVal, probe.HTTPGet.Path))
+		q.Q(r, err)
 		if err != nil {
 			return err
 		}
-		if r.StatusCode < 200 && r.StatusCode > 400 {
+		if r.StatusCode >= 200 && r.StatusCode < 400 {
 			return err
 		}
 		if probe.HTTPGet.HTTPHeaders != nil {
@@ -670,6 +671,8 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	// Build Tags: firewall group
 	if pod.ObjectMeta.Annotations["fwgroup"] != "" {
 		tags["k8s_fwgroup"] = pod.ObjectMeta.Annotations["fwgroup"]
+		tags[fmt.Sprintf("k8s_%s", pod.ObjectMeta.Annotations["fwgroup"])] = "true"
+
 	}
 
 	// Firewall Enabled
@@ -753,6 +756,14 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 		}
 
 		if running.State == "running" {
+			// Add the Target Address for the Probes
+			if tp.probes["liveness"] != nil {
+				tp.probes["liveness"].TargetIP = running.PrimaryIP
+			}
+			if tp.probes["readiness"] != nil {
+				tp.probes["readiness"].TargetIP = running.PrimaryIP
+			}
+			// Convert the Inst to Podspec
 			converted, err := instanceToPod(running)
 			if err != nil {
 				return err
