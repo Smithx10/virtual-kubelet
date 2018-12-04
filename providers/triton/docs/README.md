@@ -176,7 +176,7 @@ kubectl delete deployment ubuntu
 ```
 
 
-##Creating a Triton Kubernetes Deployment
+## Creating a Triton Kubernetes Deployment
 
 **Deploying an Instance on Triton involves the following attributes**
   - Name
@@ -207,7 +207,6 @@ As stated earlier,  we must fit the normal "triton instance create" input parame
 |instance.FWEnabled | metadata.annotations.fwenabled | bool | true
 |instance.FWGroup | metadata.annotations.fwgroup | string | "consul"
 |instance.DelProtect | metadata.annotations.delprotect | bool | false
-
    
  ``` yml
 apiVersion: apps/v1                                                                                                                                                                                                
