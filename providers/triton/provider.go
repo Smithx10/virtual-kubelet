@@ -649,6 +649,13 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	metadata["user-data"] = "{\"env_vars\": " + env_vars + "}"
 	metadata["k8s_pod"] = string(Pod)
 
+	// Iterate over Annotations Keys that  shouldn't be stored as Metadata on the Triton Instance
+	for k, v := range pod.ObjectMeta.Annotations {
+		if k != "fwenabled" && k != "fwgroup" && k != "networks" && k != "package" && k != "affinity" {
+			metadata[k] = v
+		}
+	}
+
 	// Build Tags
 	tags := make(map[string]string)
 	if pod.ObjectMeta.Labels != nil {
