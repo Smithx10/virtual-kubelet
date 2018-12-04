@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/virtual-kubelet/virtual-kubelet/log"
 	"io"
 	"os"
 	"strconv"
@@ -17,6 +16,8 @@ import (
 	"time"
 
 	"github.com/aliyun/alibaba-cloud-sdk-go/sdk/requests"
+	"github.com/cpuguy83/strongerrors"
+	"github.com/virtual-kubelet/virtual-kubelet/log"
 	"github.com/virtual-kubelet/virtual-kubelet/manager"
 	"github.com/virtual-kubelet/virtual-kubelet/providers/alicloud/eci"
 	"k8s.io/api/core/v1"
@@ -41,6 +42,7 @@ type ECIProvider struct {
 	region             string
 	nodeName           string
 	operatingSystem    string
+	clusterName        string
 	cpu                string
 	memory             string
 	pods               string
@@ -100,7 +102,12 @@ func NewECIProvider(config string, rm *manager.ResourceManager, nodeName, operat
 			return nil, err
 		}
 	}
-
+	if r := os.Getenv("ECI_CLUSTER_NAME"); r != "" {
+		p.clusterName = r
+	}
+	if p.clusterName == "" {
+		p.clusterName = "default"
+	}
 	if r := os.Getenv("ECI_REGION"); r != "" {
 		p.region = r
 	}
@@ -178,7 +185,8 @@ func (p *ECIProvider) CreatePod(ctx context.Context, pod *v1.Pod) error {
 	request.RestartPolicy = string(pod.Spec.RestartPolicy)
 
 	// get containers
-	containers, err := p.getContainers(pod)
+	containers, err := p.getContainers(pod, false)
+	initContainers, err := p.getContainers(pod, true)
 	if err != nil {
 		return err
 	}
@@ -197,14 +205,15 @@ func (p *ECIProvider) CreatePod(ctx context.Context, pod *v1.Pod) error {
 
 	// assign all the things
 	request.Containers = containers
+	request.InitContainers = initContainers
 	request.Volumes = volumes
 	request.ImageRegistryCredentials = creds
 	CreationTimestamp := pod.CreationTimestamp.UTC().Format(podTagTimeFormat)
 	tags := []eci.Tag{
-		eci.Tag{Key: "PodName", Value: pod.Name},
-		eci.Tag{Key: "ClusterName", Value: pod.ClusterName},
-		eci.Tag{Key: "NodeName", Value: pod.Spec.NodeName},
+		eci.Tag{Key: "ClusterName", Value: p.clusterName},
+		eci.Tag{Key: "NodeName", Value: p.nodeName},
 		eci.Tag{Key: "NameSpace", Value: pod.Namespace},
+		eci.Tag{Key: "PodName", Value: pod.Name},
 		eci.Tag{Key: "UID", Value: string(pod.UID)},
 		eci.Tag{Key: "CreationTimestamp", Value: CreationTimestamp},
 	}
@@ -244,13 +253,13 @@ func (p *ECIProvider) DeletePod(ctx context.Context, pod *v1.Pod) error {
 		}
 	}
 	if eciId == "" {
-		return fmt.Errorf("DeletePod cann't find Pod %s-%s", pod.Namespace, pod.Name)
+		return strongerrors.NotFound(fmt.Errorf("DeletePod can't find Pod %s-%s", pod.Namespace, pod.Name))
 	}
 
 	request := eci.CreateDeleteContainerGroupRequest()
 	request.ContainerGroupId = eciId
 	_, err := p.eciClient.DeleteContainerGroup(request)
-	return err
+	return wrapError(err)
 }
 
 // GetPod returns a pod by name that is running inside ECI
@@ -278,7 +287,7 @@ func (p *ECIProvider) GetContainerLogs(ctx context.Context, namespace, podName, 
 		}
 	}
 	if eciId == "" {
-		return "", errors.New(fmt.Sprintf("GetContainerLogs cann't find Pod %s-%s", namespace, podName))
+		return "", errors.New(fmt.Sprintf("GetContainerLogs can't find Pod %s-%s", namespace, podName))
 	}
 
 	request := eci.CreateDescribeContainerLogRequest()
@@ -342,6 +351,13 @@ func (p *ECIProvider) GetCgs() []eci.ContainerGroup {
 
 		for _, cg := range cgsResponse.ContainerGroups {
 			if getECITagValue(&cg, "NodeName") != p.nodeName {
+				continue
+			}
+			cn := getECITagValue(&cg, "ClusterName")
+			if cn == "" {
+				cn = "default"
+			}
+			if cn != p.clusterName {
 				continue
 			}
 			cgs = append(cgs, cg)
@@ -539,9 +555,13 @@ func readDockerConfigJSONSecret(secret *v1.Secret, ips []eci.ImageRegistryCreden
 	return ips, err
 }
 
-func (p *ECIProvider) getContainers(pod *v1.Pod) ([]eci.CreateContainer, error) {
-	containers := make([]eci.CreateContainer, 0, len(pod.Spec.Containers))
-	for _, container := range pod.Spec.Containers {
+func (p *ECIProvider) getContainers(pod *v1.Pod, init bool) ([]eci.CreateContainer, error) {
+	podContainers := pod.Spec.Containers
+	if init {
+		podContainers = pod.Spec.InitContainers
+	}
+	containers := make([]eci.CreateContainer, 0, len(podContainers))
+	for _, container := range podContainers {
 		c := eci.CreateContainer{
 			Name:     container.Name,
 			Image:    container.Image,
@@ -646,9 +666,9 @@ func (p *ECIProvider) getVolumes(pod *v1.Pod) ([]eci.Volume, error) {
 
 			if len(ConfigFileToPaths) != 0 {
 				volumes = append(volumes, eci.Volume{
-					Type:                              eci.VOL_TYPE_CONFIGFILEVOLUME,
-					Name:                              v.Name,
-					ConfigFileVolumeConfigFileToPaths: ConfigFileToPaths,
+					Type:              eci.VOL_TYPE_CONFIGFILEVOLUME,
+					Name:              v.Name,
+					ConfigFileToPaths: ConfigFileToPaths,
 				})
 			}
 			continue
@@ -672,9 +692,9 @@ func (p *ECIProvider) getVolumes(pod *v1.Pod) ([]eci.Volume, error) {
 
 			if len(ConfigFileToPaths) != 0 {
 				volumes = append(volumes, eci.Volume{
-					Type:                              eci.VOL_TYPE_CONFIGFILEVOLUME,
-					Name:                              v.Name,
-					ConfigFileVolumeConfigFileToPaths: ConfigFileToPaths,
+					Type:              eci.VOL_TYPE_CONFIGFILEVOLUME,
+					Name:              v.Name,
+					ConfigFileToPaths: ConfigFileToPaths,
 				})
 			}
 			continue
@@ -764,7 +784,7 @@ func containerGroupToPod(cg *eci.ContainerGroup) (*v1.Pod, error) {
 			Message:           "",
 			Reason:            "",
 			HostIP:            "",
-			PodIP:             cg.InternetIp,
+			PodIP:             cg.IntranetIp,
 			StartTime:         &containerStartTime,
 			ContainerStatuses: containerStatuses,
 		},

@@ -342,8 +342,8 @@ func (p *ACIProvider) setupNetworkProfile(auth *client.Authentication) error {
 			return fmt.Errorf("unable to delegate subnet '%s' to Azure Container Instance since it references the network security group '%s'.", p.subnetName, *subnet.SubnetPropertiesFormat.NetworkSecurityGroup.ID)
 		}
 		if subnet.SubnetPropertiesFormat.RouteTable != nil {
-                        return fmt.Errorf("unable to delegate subnet '%s' to Azure Container Instance since it references the route table '%s'.", p.subnetName, *subnet.SubnetPropertiesFormat.RouteTable.ID)
-                }
+			return fmt.Errorf("unable to delegate subnet '%s' to Azure Container Instance since it references the route table '%s'.", p.subnetName, *subnet.SubnetPropertiesFormat.RouteTable.ID)
+		}
 		if subnet.SubnetPropertiesFormat.ServiceAssociationLinks != nil {
 			for _, l := range *subnet.SubnetPropertiesFormat.ServiceAssociationLinks {
 				if l.ServiceAssociationLinkPropertiesFormat != nil && *l.ServiceAssociationLinkPropertiesFormat.LinkedResourceType == subnetDelegationService {
@@ -427,7 +427,7 @@ func getKubeProxyExtension(secretPath, masterURI, clusterCIDR string) (*aci.Exte
 			clientcmdv1.NamedCluster{
 				Name: name,
 				Cluster: clientcmdv1.Cluster{
-					Server: masterURI,
+					Server:                   masterURI,
 					CertificateAuthorityData: ca,
 				},
 			},
@@ -691,7 +691,8 @@ func (p *ACIProvider) DeletePod(ctx context.Context, pod *v1.Pod) error {
 	defer span.End()
 	addAzureAttributes(span, p)
 
-	return p.aciClient.DeleteContainerGroup(ctx, p.resourceGroup, fmt.Sprintf("%s-%s", pod.Namespace, pod.Name))
+	err := p.aciClient.DeleteContainerGroup(ctx, p.resourceGroup, fmt.Sprintf("%s-%s", pod.Namespace, pod.Name))
+	return wrapError(err)
 }
 
 // GetPod returns a pod by name that is running inside ACI
@@ -996,6 +997,38 @@ func (p *ACIProvider) getImagePullSecrets(pod *v1.Pod) ([]aci.ImageRegistryCrede
 	return ips, nil
 }
 
+func makeRegistryCredential(server string, authConfig AuthConfig) (*aci.ImageRegistryCredential, error) {
+	username := authConfig.Username
+	password := authConfig.Password
+
+	if username == "" {
+		if authConfig.Auth == "" {
+			return nil, fmt.Errorf("no username present in auth config for server: %s", server)
+		}
+
+		decoded, err := base64.StdEncoding.DecodeString(authConfig.Auth)
+		if err != nil {
+			return nil, fmt.Errorf("error decoding the auth for server: %s Error: %v", server, err)
+		}
+
+		parts := strings.Split(string(decoded), ":")
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("malformed auth for server: %s", server)
+		}
+
+		username = parts[0]
+		password = parts[1]
+	}
+
+	cred := aci.ImageRegistryCredential{
+		Server:   server,
+		Username: username,
+		Password: password,
+	}
+
+	return &cred, nil
+}
+
 func readDockerCfgSecret(secret *v1.Secret, ips []aci.ImageRegistryCredential) ([]aci.ImageRegistryCredential, error) {
 	var err error
 	var authConfigs map[string]AuthConfig
@@ -1010,12 +1043,13 @@ func readDockerCfgSecret(secret *v1.Secret, ips []aci.ImageRegistryCredential) (
 		return ips, err
 	}
 
-	for server, authConfig := range authConfigs {
-		ips = append(ips, aci.ImageRegistryCredential{
-			Password: authConfig.Password,
-			Server:   server,
-			Username: authConfig.Username,
-		})
+	for server := range authConfigs {
+		cred, err := makeRegistryCredential(server, authConfigs[server])
+		if err != nil {
+			return ips, err
+		}
+
+		ips = append(ips, *cred)
 	}
 
 	return ips, err
@@ -1037,17 +1071,17 @@ func readDockerConfigJSONSecret(secret *v1.Secret, ips []aci.ImageRegistryCreden
 	}
 
 	auths, ok := authConfigs["auths"]
-
 	if !ok {
 		return ips, fmt.Errorf("malformed dockerconfigjson in secret")
 	}
 
-	for server, authConfig := range auths {
-		ips = append(ips, aci.ImageRegistryCredential{
-			Password: authConfig.Password,
-			Server:   server,
-			Username: authConfig.Username,
-		})
+	for server := range auths {
+		cred, err := makeRegistryCredential(server, auths[server])
+		if err != nil {
+			return ips, err
+		}
+
+		ips = append(ips, *cred)
 	}
 
 	return ips, err
@@ -1252,11 +1286,7 @@ func (p *ACIProvider) getVolumes(pod *v1.Pod) ([]aci.Volume, error) {
 			}
 
 			for k, v := range secret.Data {
-				var b bytes.Buffer
-				enc := base64.NewEncoder(base64.StdEncoding, &b)
-				enc.Write(v)
-
-				paths[k] = b.String()
+				paths[k] = base64.StdEncoding.EncodeToString(v)
 			}
 
 			if len(paths) != 0 {
@@ -1279,12 +1309,8 @@ func (p *ACIProvider) getVolumes(pod *v1.Pod) ([]aci.Volume, error) {
 				continue
 			}
 
-			for k, v := range configMap.Data {
-				var b bytes.Buffer
-				enc := base64.NewEncoder(base64.StdEncoding, &b)
-				enc.Write([]byte(v))
-
-				paths[k] = b.String()
+			for k, v := range configMap.BinaryData {
+				paths[k] = base64.StdEncoding.EncodeToString(v)
 			}
 
 			if len(paths) != 0 {
