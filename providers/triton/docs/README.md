@@ -195,7 +195,7 @@ As stated earlier,  we must fit the normal "triton instance create" input parame
 
 
 |  Triton | PodSpec | Type  | Example |
-|---|---|---|---|---|
+|---|---|---|---|
 |  instance.Name | spec.containers.name|string | "consul" 
 |instance.Package| metadata.annotations.package |string | "9cd95f47-11ea-4f61-c323-fe526fc1c544" 
 |instance.Image | spec.containers.image | string | "c239a01f-5fe9-456f-8f92-53f5b7efd53d"
