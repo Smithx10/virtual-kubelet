@@ -176,7 +176,7 @@ kubectl delete deployment ubuntu
 ```
 
 
-##Creating a Triton Kubernetes Deployment
+## Creating a Triton Kubernetes Deployment
 
 **Deploying an Instance on Triton involves the following attributes**
   - Name
@@ -194,17 +194,17 @@ As stated earlier,  we must fit the normal "triton instance create" input parame
 
 
 |  Triton | PodSpec | Type  | Example |
-|---|---|---|---|---|
-|  instance.Name | spec.containers.name|string | "consul" 
-|instance.Package| metadata.annotations.package |string | "9cd95f47-11ea-4f61-c323-fe526fc1c544" 
-|instance.Image | spec.containers.image | string | "c239a01f-5fe9-456f-8f92-53f5b7efd53d"
-|instance.Networks | metadata.annotations.networks | string (csv) | "913849ab-17c4-4a03-9c2d-1147b8bf4d24, 913849ab-17c4-4a03-9c2d-1147b8bf4d24"
-|instance.Affinity | metadata.annotations.affinity| string| "role!=consul"
-|instance.Metadata | metadata.annotations | KV | foo: "bar"
-|instance.Tags | metadata.labels | KV | triton.cns.services: "consul"
-|instance.Ports | spec.containers.port | [ContainerPort](https://godoc.org/k8s.io/api/core/v1#ContainerPort) | ports: [{ "name": "ssh", "containerPort": 22 }]
-|instance.FWEnabled | metadata.annotations.fwenabled | bool | true
-|instance.FWGroup | metadata.annotations.fwgroup | string | "consul"
+|---|---|---|---|
+|  instance.Name | spec.containers.name|string | "consul" |
+|instance.Package| metadata.annotations.package |string | "9cd95f47-11ea-4f61-c323-fe526fc1c544" |
+|instance.Image | spec.containers.image | string | "c239a01f-5fe9-456f-8f92-53f5b7efd53d" |
+|instance.Networks | metadata.annotations.networks | string (csv) | "913849ab-17c4-4a03-9c2d-1147b8bf4d24, 913849ab-17c4-4a03-9c2d-1147b8bf4d24" |
+|instance.Affinity | metadata.annotations.affinity| string| "role!=consul" |
+|instance.Metadata | metadata.annotations | KV | foo: "bar" |
+|instance.Tags | metadata.labels | KV | triton.cns.services: "consul" |
+|instance.Ports | spec.containers.port | [ContainerPort](https://godoc.org/k8s.io/api/core/v1#ContainerPort) | ports: [{ "name": "ssh", "containerPort": 22 }] |
+|instance.FWEnabled | metadata.annotations.fwenabled | bool | true |
+|instance.FWGroup | metadata.annotations.fwgroup | string | "consul" |
 
    
  ``` yml
