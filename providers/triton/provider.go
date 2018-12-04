@@ -672,6 +672,7 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	if pod.ObjectMeta.Annotations["fwgroup"] != "" {
 		tags["k8s_fwgroup"] = pod.ObjectMeta.Annotations["fwgroup"]
 	}
+
 	// Firewall Enabled
 	var fwenabled bool
 	if pod.ObjectMeta.Annotations["fwenabled"] == "true" {
@@ -763,6 +764,26 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 			break
 		}
 		time.Sleep(2 * time.Second)
+	}
+
+	// Apply Deletion Protection if Specified
+	var delprotect bool
+	if pod.ObjectMeta.Annotations["delprotect"] == "true" {
+		delprotect = true
+	}
+	if pod.ObjectMeta.Annotations["delprotect"] == "false" {
+		delprotect = false
+	}
+	if pod.ObjectMeta.Annotations["delprotect"] == "" {
+		delprotect = false
+	}
+
+	if delprotect == true {
+		err := c.Instances().EnableDeletionProtection(ctx, &compute.EnableDeletionProtectionInput{InstanceID: i.ID})
+		if err != nil {
+			// implement events
+			fmt.Println("Couldn't Apply Error Protection")
+		}
 	}
 
 	// Apply Firewall Rules for Ports Specified

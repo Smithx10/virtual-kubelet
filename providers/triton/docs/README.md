@@ -186,9 +186,10 @@ kubectl delete deployment ubuntu
   - Affinity Rules
   - Metadata
   - Tags
-  - FWGroup
-  - FWEnabled
   - Ports
+  - FWEnabled
+  - FWGroup
+  - DelProtect
 
 As stated earlier,  we must fit the normal "triton instance create" input parameters into the PodSec that kubernetes uses.  Luckily for us, Triton only has a few outliars that don't map 1 to 1.   In this situation we just add them as "annotations" in metadata.annotations.
 
@@ -205,6 +206,7 @@ As stated earlier,  we must fit the normal "triton instance create" input parame
 |instance.Ports | spec.containers.port | [ContainerPort](https://godoc.org/k8s.io/api/core/v1#ContainerPort) | ports: [{ "name": "ssh", "containerPort": 22 }]
 |instance.FWEnabled | metadata.annotations.fwenabled | bool | true
 |instance.FWGroup | metadata.annotations.fwgroup | string | "consul"
+|instance.DelProtect | metadata.annotations.delprotect | bool | false
 
    
  ``` yml
