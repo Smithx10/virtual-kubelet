@@ -376,4 +376,22 @@ de193e50  true     -       FROM tag "k8s_consul" TO tag "k8s_consul" ALLOW udp P
 
 ```
 
+To access your Defined Environment Variables from within your instance use **mdata-get**:
+``` bash
+[root@c76c5f14-f999-c51b-9945-d97461fdffe1 ~]# mdata-get user-data | jq -r .env_vars
+{
+  "CONFIG_VAR": "datacenter mydatacenter\nfoo bar\nbar baz\nbaz foo\n",
+  "CONSUL": "consul-demo.consul.svc.smith.us-east-1.cns.mydomain.us",
+  "CONSUL_AGENT": "1",
+  "CONSUL_BOOTSTRAP_EXPECT": "5",
+  "CONTAINERPILOT": "/etc/containerpilot.json5",
+  "FOO": "bar",
+  "NODE_EXPORTER": "1",
+  "SECRET_PASSWORD": "1f2d1e2e67df",
+  "SECRET_USERNAME": "admin",
+  "consul-config": "datacenter mydatacenter\nfoo bar\nbar baz\nbaz foo\n",
+  "foo": "bar"
+}
+
+```
 
