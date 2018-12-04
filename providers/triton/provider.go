@@ -23,7 +23,6 @@ import (
 	"github.com/joyent/triton-go/compute"
 	"github.com/joyent/triton-go/network"
 	"github.com/virtual-kubelet/virtual-kubelet/manager"
-	"github.com/y0ssar1an/q"
 	"k8s.io/api/core/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -817,7 +816,6 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 		}
 
 		// Create Firewall Group if Doesn't exist
-		q.Q(p.fwgs[fwg])
 		if p.fwgs[fwg] == nil {
 			p.fwgs[fwg] = p.NewTritonFWGroup()
 
@@ -896,7 +894,10 @@ func (p *TritonProvider) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 	tp.shutdown()
 
 	// Delete Instance
-	c.Instances().Delete(ctx, &compute.DeleteInstanceInput{ID: ContainerID})
+	err = c.Instances().Delete(ctx, &compute.DeleteInstanceInput{ID: ContainerID})
+	if err != nil {
+		return err
+	}
 
 	// Confirm Deletion
 	for {
@@ -931,6 +932,7 @@ func (p *TritonProvider) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 			for _, v := range p.fwgs[fwg].fwrs {
 				n.Firewall().DeleteRule(ctx, &network.DeleteRuleInput{ID: v.ID})
 			}
+			delete(p.fwgs, fwg)
 		}
 	}
 
