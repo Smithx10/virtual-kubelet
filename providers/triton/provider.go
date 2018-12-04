@@ -23,7 +23,6 @@ import (
 	"github.com/joyent/triton-go/compute"
 	"github.com/joyent/triton-go/network"
 	"github.com/virtual-kubelet/virtual-kubelet/manager"
-	"github.com/y0ssar1an/q"
 	"k8s.io/api/core/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -265,7 +264,6 @@ func (p *TritonProvider) RunProbe(probe *TritonProbe) error {
 			Timeout: time.Duration(time.Duration(probe.TimeoutSeconds) * time.Second),
 		}
 		r, err := client.Get(fmt.Sprintf("http://%s:%d%s", probe.TargetIP, probe.HTTPGet.Port.IntVal, probe.HTTPGet.Path))
-		q.Q(r, err)
 		if err != nil {
 			return err
 		}
