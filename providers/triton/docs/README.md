@@ -229,6 +229,7 @@ spec:
         fwgroup: consul                                                                                                                                                                                            
         fwenabled: "true"
         affinity: "role!=consul"
+        delprotect: "true"
         foo: "bar"
         bar: "baz"                                                                                                                                                                                          
       labels:                                                                                                                                                                                                      
@@ -320,7 +321,7 @@ This manifest results in the following provisioned instance:
     ],
     "memory": 2048,
     "disk": 20480,
-    "deletion_protection": false,
+    "deletion_protection": true,
     "metadata": {
         "bar": "baz",
         "foo": "bar",

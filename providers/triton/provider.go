@@ -651,7 +651,7 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 
 	// Iterate over Annotations Keys that  shouldn't be stored as Metadata on the Triton Instance
 	for k, v := range pod.ObjectMeta.Annotations {
-		if k != "fwenabled" && k != "fwgroup" && k != "networks" && k != "package" && k != "affinity" {
+		if k != "fwenabled" && k != "fwgroup" && k != "networks" && k != "package" && k != "affinity" && k != "delprotect" {
 			metadata[k] = v
 		}
 	}
