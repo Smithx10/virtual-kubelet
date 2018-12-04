@@ -959,15 +959,19 @@ func (p *TritonProvider) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 // GetPod retrieves a pod by name from the provider (can be cached).
 func (p *TritonProvider) GetPod(ctx context.Context, namespace, name string) (*corev1.Pod, error) {
 	log.Printf("Received GetPod request for %s/%s.\n", namespace, name)
-	fn := p.GetPodFullName(namespace, name)
-	ContainerID := p.pods[fn].pod.Status.ContainerStatuses[0].ContainerID
 
 	c, _ := p.client.Compute()
-	i, err := c.Instances().Get(p.pods[fn].shutdownCtx, &compute.GetInstanceInput{ID: ContainerID})
+	i, err := c.Instances().List(ctx, &compute.ListInstancesInput{
+		Name: name,
+	})
 	if err != nil {
 		return nil, err
 	}
-	return p.TagToPodSpec(fmt.Sprint(i.Tags["Pod"])), nil
+	if len(i) == 0 {
+		return nil, nil
+	}
+
+	return p.TagToPodSpec(fmt.Sprint(i[0].Metadata["k8s_pod"])), nil
 }
 
 // GetContainerLogs retrieves the logs of a container by name from the provider.
@@ -1036,8 +1040,7 @@ func (p *TritonProvider) GetPods(ctx context.Context) ([]*corev1.Pod, error) {
 			if p.fwgs[fwg] == nil {
 				p.fwgs[fwg] = p.NewTritonFWGroup()
 			}
-			members := p.fwgs[fwg].members
-			members = append(members, fmt.Sprintf("%s/%s", i.Tags["k8s_namespace"], i.Name))
+			p.fwgs[fwg].members = append(p.fwgs[fwg].members, fmt.Sprintf("%s/%s", i.Tags["k8s_namespace"], i.Name))
 		}
 
 		// Convert Triton Instance to Pod
@@ -1191,7 +1194,7 @@ func instanceToPod(i *compute.Instance) (*corev1.Pod, error) {
 	//containerStartTime := metav1.NewTime(time.Now())
 
 	/*
-	   On Triton we do not share Namespaces, so init Pod Groups or Patterns which encourage this aren't implement.   This implementation Maps 1 instance to 1 pod.
+	   Triton does not share Namespaces, so init Pod Groups or Patterns which encourage this aren't implemented.   This implementation Maps 1 instance to 1 pod.
 	*/
 	container := corev1.Container{
 		//Name string `json:"name" protobuf:"bytes,1,opt,name=name"`
