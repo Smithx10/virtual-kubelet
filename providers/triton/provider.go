@@ -1012,6 +1012,11 @@ func (p *TritonProvider) GetPods(ctx context.Context) ([]*corev1.Pod, error) {
 		return nil, err
 	}
 
+	n, err := p.client.Network()
+	if err != nil {
+		return nil, err
+	}
+
 	// Create Pods Array
 	pods := make([]*corev1.Pod, 0, len(is))
 	for _, i := range is {
@@ -1038,15 +1043,21 @@ func (p *TritonProvider) GetPods(ctx context.Context) ([]*corev1.Pod, error) {
 		p.pods[tp.fn].pod = converted
 		// Create Return for GetPods
 		pods = append(pods, tp.pod)
+
+		// Repopulate instance fwrules
+		rules, err := n.Firewall().ListMachineRules(ctx, &network.ListMachineRulesInput{MachineID: i.ID})
+		if err != nil {
+			return nil, err
+		}
+		for _, r := range rules {
+			p.pods[tp.fn].fwrs = append(p.pods[tp.fn].fwrs, r)
+		}
+
 		// Run Loops
 		p.RunTritonPodLoops(tp)
 	}
 
 	// Get FWGroup Rules on triton to repopulate the triton fwgs struct
-	n, err := p.client.Network()
-	if err != nil {
-		return nil, err
-	}
 
 	rules, err := n.Firewall().ListRules(ctx, &network.ListRulesInput{})
 	if err != nil {
