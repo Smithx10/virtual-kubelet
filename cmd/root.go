@@ -306,6 +306,7 @@ func initConfig() {
 		ResourceManager: rm,
 		DaemonPort:      int32(daemonPort),
 		InternalIP:      os.Getenv("VKUBELET_POD_IP"),
+		K8sClient:       k8sClient,
 	}
 
 	p, err = register.GetProvider(provider, initConfig)

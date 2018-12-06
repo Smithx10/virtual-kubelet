@@ -29,6 +29,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	utilvalidation "k8s.io/apimachinery/pkg/util/validation"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/kubernetes/scheme"
+	typedcorev1 "k8s.io/client-go/kubernetes/typed/core/v1"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/tools/remotecommand"
 )
 
@@ -81,6 +85,8 @@ type TritonProvider struct {
 	internalIP         string
 	nodeName           string
 	operatingSystem    string
+	k8sClient          *kubernetes.Clientset
+	recorder           record.EventRecorder
 	resourceManager    *manager.ResourceManager
 
 	// Triton Specific
@@ -360,7 +366,8 @@ func NewTritonProvider(
 	nodeName string,
 	operatingSystem string,
 	internalIP string,
-	daemonEndpointPort int32) (*TritonProvider, error) {
+	daemonEndpointPort int32,
+	k8sClient *kubernetes.Clientset) (*TritonProvider, error) {
 
 	// Create the Triton provider.
 	log.Println("Creating Triton provider.")
@@ -423,12 +430,19 @@ func NewTritonProvider(
 		}
 	}
 
+	// Triton Client Config
 	tritonConfig := &triton.ClientConfig{
 		TritonURL:   os.Getenv("SDC_URL"),
 		AccountName: accountName,
 		Username:    userName,
 		Signers:     []authentication.Signer{signer},
 	}
+
+	// Create an event broadcaster.
+	eventBroadcaster := record.NewBroadcaster()
+	//eventBroadcaster.StartLogging(log.L.Infof)
+	eventBroadcaster.StartRecordingToSink(&typedcorev1.EventSinkImpl{Interface: k8sClient.CoreV1().Events("")})
+	recorder := eventBroadcaster.NewRecorder(scheme.Scheme, corev1.EventSource{Component: fmt.Sprintf("%s", nodeName)})
 
 	p := TritonProvider{
 		pods:               make(map[string]*TritonPod),
@@ -437,7 +451,9 @@ func NewTritonProvider(
 		nodeName:           nodeName,
 		operatingSystem:    operatingSystem,
 		internalIP:         internalIP,
+		k8sClient:          k8sClient,
 		daemonEndpointPort: daemonEndpointPort,
+		recorder:           recorder,
 		client: &Client{
 			config:                tritonConfig,
 			insecureSkipTLSVerify: insecure,
@@ -534,6 +550,8 @@ func (p *TritonProvider) RunTritonPodLoops(tp *TritonPod) {
 func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	log.Printf("Received CreatePod request for %+v.\n", pod)
 
+	p.recorder.Eventf(pod, corev1.EventTypeWarning, "InvalidEnvironmentVariableNames", "Keys [%s] from the EnvFrom configMap %s/%s were skipped since they are considered invalid environment variable names.", "foot", "bar", "baz")
+
 	// Create a Triton Pod  We do this right away so if a delete comes in about this... its on the struct
 	tp, _ := p.NewTritonPod(ctx, pod)
 	// Add PodSpec to TritonPod
@@ -586,7 +604,8 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 			}
 			if len(invalidKeys) > 0 {
 				sort.Strings(invalidKeys)
-				fmt.Sprintf("InvalidEnvironmentVariableNames", "Keys [%s] from the EnvFrom configMap %s/%s were skipped since they are considered invalid environment variable names.", strings.Join(invalidKeys, ", "), pod.Namespace, name)
+				p.recorder.Eventf(pod, corev1.EventTypeWarning, "InvalidEnvironmentVariableNames", "Keys [%s] from the EnvFrom configMap %s/%s were skipped since they are considered invalid environment variable names.", strings.Join(invalidKeys, ", "), pod.Namespace, name)
+				//fmt.Sprintf("InvalidEnvironmentVariableNames", "Keys [%s] from the EnvFrom configMap %s/%s were skipped since they are considered invalid environment variable names.", strings.Join(invalidKeys, ", "), pod.Namespace, name)
 			}
 		case envFrom.SecretRef != nil:
 			s := envFrom.SecretRef

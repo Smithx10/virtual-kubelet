@@ -12,5 +12,5 @@ func init() {
 }
 
 func initTriton(cfg InitConfig) (providers.Provider, error) {
-	return triton.NewTritonProvider(cfg.ConfigPath, cfg.ResourceManager, cfg.NodeName, cfg.OperatingSystem, cfg.InternalIP, cfg.DaemonPort)
+	return triton.NewTritonProvider(cfg.ConfigPath, cfg.ResourceManager, cfg.NodeName, cfg.OperatingSystem, cfg.InternalIP, cfg.DaemonPort, cfg.K8sClient)
 }

@@ -5,12 +5,14 @@ import (
 	"github.com/pkg/errors"
 	"github.com/virtual-kubelet/virtual-kubelet/manager"
 	"github.com/virtual-kubelet/virtual-kubelet/providers"
+	"k8s.io/client-go/kubernetes"
 )
 
 var providerInits = make(map[string]initFunc)
 
 // InitConfig is the config passed to initialize a registered provider.
 type InitConfig struct {
+	K8sClient       *kubernetes.Clientset
 	ConfigPath      string
 	NodeName        string
 	OperatingSystem string
