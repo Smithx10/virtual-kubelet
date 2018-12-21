@@ -23,6 +23,7 @@ import (
 	"github.com/joyent/triton-go/compute"
 	"github.com/joyent/triton-go/network"
 	"github.com/virtual-kubelet/virtual-kubelet/manager"
+	"github.com/y0ssar1an/q"
 	"k8s.io/api/core/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -996,7 +997,8 @@ func (p *TritonProvider) GetPod(ctx context.Context, namespace, name string) (*c
 // GetContainerLogs retrieves the logs of a container by name from the provider.
 func (p *TritonProvider) GetContainerLogs(ctx context.Context, namespace, podName, containerName string, tail int) (string, error) {
 	log.Printf("Received GetContainerLogs request for %s/%s/%s.\n", namespace, podName, containerName)
-	return "", nil
+	q.Q(namespace, podName, containerName, tail)
+	return "Im Logging", nil
 }
 
 // GetPodFullName retrieves the full pod name as defined in the provider context.
@@ -1006,11 +1008,10 @@ func (p *TritonProvider) GetPodFullName(namespace string, pod string) string {
 
 // ExecInContainer executes a command in a container in the pod, copying data
 // between in/out/err and the container's stdin/stdout/stderr.
-func (p *TritonProvider) ExecInContainer(
-	name string, uid types.UID, container string, cmd []string, in io.Reader, out, err io.WriteCloser,
-	tty bool, resize <-chan remotecommand.TerminalSize, timeout time.Duration) error {
+func (p *TritonProvider) ExecInContainer(name string, uid types.UID, container string, cmd []string, in io.Reader, out, errstream io.WriteCloser, tty bool, resize <-chan remotecommand.TerminalSize, timeout time.Duration) error {
 	log.Printf("Received ExecInContainer request for %s.\n", container)
-	return errNotImplemented
+
+	return nil
 }
 
 // GetPodStatus retrieves the status of a pod by name from the provider.
@@ -1059,7 +1060,7 @@ func (p *TritonProvider) GetPods(ctx context.Context) ([]*corev1.Pod, error) {
 			if p.fwgs[fwg] == nil {
 				p.fwgs[fwg] = p.NewTritonFWGroup()
 			}
-			p.fwgs[fwg].members = append(p.fwgs[fwg].members, fmt.Sprintf("%s/%s", i.Tags["k8s_namespace"], i.Name))
+			p.fwgs[fwg].members = append(p.fwgs[fwg].members, fmt.Sprintf("%s-%s", i.Tags["k8s_namespace"], i.Name))
 		}
 
 		// Convert Triton Instance to Pod

@@ -12,7 +12,7 @@ spec:
   template:
     metadata:
       annotations:
-        package: b87c2a29-6b6a-6d19-ea65-aa81e680002c # Put the package you want
+        package: de1079ef-d082-cd82-a425-c0d572192fda # Put the package you want
         networks: 17d7aa50-6ad9-4e56-93b7-12dc868fac2a # Put the networks your want
         fwgroup: ubuntu  
         fwenabled: "true"
@@ -22,7 +22,7 @@ spec:
     spec:
       restartPolicy: Always
       containers:
-      - image: 7b5981c4-1889-11e7-b4c5-3f3bdfc9b88b
+      - image: ac99517a-72ac-44c0-90e6-c7ce3d944a0a
         name: consul
         ports:
           - containerPort: 22
