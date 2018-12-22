@@ -1,6 +1,7 @@
 package triton
 
 import (
+	"bufio"
 	"context"
 	"encoding/csv"
 	"encoding/json"
@@ -18,12 +19,15 @@ import (
 	"sync"
 	"time"
 
+	docker "github.com/fsouza/go-dockerclient"
 	triton "github.com/joyent/triton-go"
 	"github.com/joyent/triton-go/authentication"
 	"github.com/joyent/triton-go/compute"
 	"github.com/joyent/triton-go/network"
 	"github.com/virtual-kubelet/virtual-kubelet/manager"
 	"github.com/y0ssar1an/q"
+	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/agent"
 	"k8s.io/api/core/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -91,9 +95,10 @@ type TritonProvider struct {
 	resourceManager    *manager.ResourceManager
 
 	// Triton Specific
-	client *Client
-	fwgs   map[string]*TritonFWGroup
-	pods   map[string]*TritonPod
+	tclient *Client
+	dclient *docker.Client
+	fwgs    map[string]*TritonFWGroup
+	pods    map[string]*TritonPod
 
 	// Triton resources.
 	capacity           capacity
@@ -123,7 +128,7 @@ func (p *TritonProvider) GetInstStatus(tp *TritonPod) {
 		case <-tp.shutdownCtx.Done():
 			return
 		default:
-			c, err := p.client.Compute()
+			c, err := p.tclient.Compute()
 			if err != nil {
 				return
 			}
@@ -157,7 +162,7 @@ func (p *TritonProvider) RestartInstance(tp *TritonPod) {
 	LastTerminate := tp.pod.Status.ContainerStatuses[0].LastTerminationState.Terminated.StartedAt.Format(time.RFC3339)
 	LastTerm, _ := time.Parse(time.RFC3339, LastTerminate)
 
-	c, err := p.client.Compute()
+	c, err := p.tclient.Compute()
 	if err != nil {
 		return
 	}
@@ -218,7 +223,7 @@ func (p *TritonProvider) RestartInstance(tp *TritonPod) {
 func (p *TritonProvider) FailInstance(tp *TritonPod, LastTerm time.Time) {
 	ContainerID := tp.pod.Status.ContainerStatuses[0].ContainerID
 
-	c, err := p.client.Compute()
+	c, err := p.tclient.Compute()
 	if err != nil {
 		return
 	}
@@ -439,6 +444,8 @@ func NewTritonProvider(
 		Signers:     []authentication.Signer{signer},
 	}
 
+	dockerClient, err := docker.NewClientFromEnv()
+
 	// Create an event broadcaster.
 	eventBroadcaster := record.NewBroadcaster()
 	//eventBroadcaster.StartLogging(log.L.Infof)
@@ -455,11 +462,12 @@ func NewTritonProvider(
 		k8sClient:          k8sClient,
 		daemonEndpointPort: daemonEndpointPort,
 		recorder:           recorder,
-		client: &Client{
+		tclient: &Client{
 			config:                tritonConfig,
 			insecureSkipTLSVerify: insecure,
 			affinityLock:          &sync.RWMutex{},
 		},
+		dclient: dockerClient,
 	}
 
 	//Read the Triton provider configuration file.
@@ -562,6 +570,11 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 
 	// Marshal the Pod.Spec that was recieved from the Masters and write store it on the instance.  In the event that Virtual Kubelet Crashes we can rehydrate from the tag.
 	Pod, _ := json.Marshal(pod)
+
+	if pod.ObjectMeta.Annotations["type"] == "docker" {
+		q.Q("docker")
+		return nil
+	}
 
 	var (
 		configMaps = make(map[string]*v1.ConfigMap)
@@ -740,7 +753,7 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	}
 
 	//  Reach out to Triton to create an Instance
-	c, err := p.client.Compute()
+	c, err := p.tclient.Compute()
 	if err != nil {
 		return err
 	}
@@ -823,7 +836,7 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 			v.Protocol = "TCP"
 		}
 		// Create Client and Do work.
-		n, err := p.client.Network()
+		n, err := p.tclient.Network()
 		if err != nil {
 			return err
 		}
@@ -839,7 +852,7 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	if pod.ObjectMeta.Annotations["fwgroup"] != "" {
 		fwg := pod.ObjectMeta.Annotations["fwgroup"]
 
-		n, err := p.client.Network()
+		n, err := p.tclient.Network()
 		if err != nil {
 			return err
 		}
@@ -914,7 +927,7 @@ func (p *TritonProvider) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 	ContainerID := tp.pod.Status.ContainerStatuses[0].ContainerID
 
 	// Create the Connection
-	c, err := p.client.Compute()
+	c, err := p.tclient.Compute()
 	if err != nil {
 		return err
 	}
@@ -938,7 +951,7 @@ func (p *TritonProvider) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 	}
 
 	// Delete FW Rules
-	n, err := p.client.Network()
+	n, err := p.tclient.Network()
 	if err != nil {
 		return err
 	}
@@ -980,7 +993,7 @@ func (p *TritonProvider) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 func (p *TritonProvider) GetPod(ctx context.Context, namespace, name string) (*corev1.Pod, error) {
 	log.Printf("Received GetPod request for %s/%s.\n", namespace, name)
 
-	c, _ := p.client.Compute()
+	c, _ := p.tclient.Compute()
 	i, err := c.Instances().List(ctx, &compute.ListInstancesInput{
 		Name: name,
 	})
@@ -998,6 +1011,16 @@ func (p *TritonProvider) GetPod(ctx context.Context, namespace, name string) (*c
 func (p *TritonProvider) GetContainerLogs(ctx context.Context, namespace, podName, containerName string, tail int) (string, error) {
 	log.Printf("Received GetContainerLogs request for %s/%s/%s.\n", namespace, podName, containerName)
 	q.Q(namespace, podName, containerName, tail)
+
+	client := &SSH{
+		Ip:   "10.1.10.112",
+		User: "ubuntu",
+		Port: 22,
+	}
+	client.Connect(4)
+	client.RunCmd("journalctl -u kubelet | tail -n 20")
+	client.Close()
+
 	return "Im Logging", nil
 }
 
@@ -1032,7 +1055,7 @@ func (p *TritonProvider) GetPods(ctx context.Context) ([]*corev1.Pod, error) {
 	log.Println("Received GetPods request.")
 
 	// Get Instances created by k8s on triton to repopulate the triton pods struct
-	c, err := p.client.Compute()
+	c, err := p.tclient.Compute()
 	if err != nil {
 		return nil, err
 	}
@@ -1045,7 +1068,7 @@ func (p *TritonProvider) GetPods(ctx context.Context) ([]*corev1.Pod, error) {
 		return nil, err
 	}
 
-	n, err := p.client.Network()
+	n, err := p.tclient.Network()
 	if err != nil {
 		return nil, err
 	}
@@ -1395,4 +1418,121 @@ func (p *TritonProvider) TagToPodSpec(tag string) *corev1.Pod {
 	var tps *corev1.Pod
 	json.Unmarshal(bytes, &tps)
 	return tps
+}
+
+const (
+	CERT_PASSWORD        = 1
+	CERT_PUBLIC_KEY_FILE = 2
+	DEFAULT_TIMEOUT      = 3 // second
+	SSH_AGENT            = 4
+)
+
+type SSH struct {
+	Ip      string
+	User    string
+	Cert    string //password or key file path
+	Port    int
+	session *ssh.Session
+	client  *ssh.Client
+}
+
+func SSHAgent() ssh.AuthMethod {
+	if sshAgent, err := net.Dial("unix", os.Getenv("SSH_AUTH_SOCK")); err == nil {
+		return ssh.PublicKeysCallback(agent.NewClient(sshAgent).Signers)
+	}
+	return nil
+}
+
+func (ssh_client *SSH) readPublicKeyFile(file string) ssh.AuthMethod {
+	buffer, err := ioutil.ReadFile(file)
+	if err != nil {
+		return nil
+	}
+
+	key, err := ssh.ParsePrivateKey(buffer)
+	if err != nil {
+		return nil
+	}
+	return ssh.PublicKeys(key)
+}
+
+func (ssh_client *SSH) Connect(mode int) {
+
+	var ssh_config *ssh.ClientConfig
+	var auth []ssh.AuthMethod
+	if mode == CERT_PASSWORD {
+		auth = []ssh.AuthMethod{ssh.Password(ssh_client.Cert)}
+	} else if mode == CERT_PUBLIC_KEY_FILE {
+		auth = []ssh.AuthMethod{ssh_client.readPublicKeyFile(ssh_client.Cert)}
+	} else if mode == SSH_AGENT {
+		auth = []ssh.AuthMethod{SSHAgent()}
+	} else {
+		log.Println("does not support mode: ", mode)
+		return
+	}
+
+	ssh_config = &ssh.ClientConfig{
+		User: ssh_client.User,
+		Auth: auth,
+		HostKeyCallback: func(hostname string, remote net.Addr, key ssh.PublicKey) error {
+			return nil
+		},
+		Timeout: time.Second * DEFAULT_TIMEOUT,
+	}
+
+	client, err := ssh.Dial("tcp", fmt.Sprintf("%s:%d", ssh_client.Ip, ssh_client.Port), ssh_config)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	session, err := client.NewSession()
+	if err != nil {
+		fmt.Println(err)
+		client.Close()
+		return
+	}
+
+	ssh_client.session = session
+	ssh_client.client = client
+}
+
+func SendCommand(in io.WriteCloser, cmd string) error {
+	if _, err := in.Write([]byte(cmd + "\n")); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (ssh_client *SSH) RunCmd(cmd string) {
+	//out, err := ssh_client.session.CombinedOutput(cmd)
+	//if err != nil {
+	//fmt.Println(err)
+	//}
+	//fmt.Println(string(out))
+
+	stdin, err := ssh_client.session.StdinPipe()
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer stdin.Close()
+
+	stdout, err := ssh_client.session.StdoutPipe()
+
+	err = ssh_client.session.Start(cmd)
+	fmt.Println(err)
+
+	//SendCommand(stdin, cmd)
+
+	s := bufio.NewScanner(stdout)
+	for s.Scan() {
+		m := s.Text()
+		q.Q(m)
+	}
+}
+
+func (ssh_client *SSH) Close() {
+	ssh_client.session.Close()
+	ssh_client.client.Close()
 }
