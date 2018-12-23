@@ -571,11 +571,6 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	// Marshal the Pod.Spec that was recieved from the Masters and write store it on the instance.  In the event that Virtual Kubelet Crashes we can rehydrate from the tag.
 	Pod, _ := json.Marshal(pod)
 
-	if pod.ObjectMeta.Annotations["type"] == "docker" {
-		q.Q("docker")
-		return nil
-	}
-
 	var (
 		configMaps = make(map[string]*v1.ConfigMap)
 		err        error
@@ -682,7 +677,7 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 
 	// Iterate over Annotations Keys that  shouldn't be stored as Metadata on the Triton Instance
 	for k, v := range pod.ObjectMeta.Annotations {
-		if k != "fwenabled" && k != "fwgroup" && k != "networks" && k != "package" && k != "affinity" && k != "delprotect" {
+		if k != "fwenabled" && k != "fwgroup" && k != "networks" && k != "public_network" && k != "private_network" && k != "package" && k != "affinity" && k != "delprotect" {
 			metadata[k] = v
 		}
 	}
@@ -752,7 +747,32 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 		}
 	}
 
-	//  Reach out to Triton to create an Instance
+	// Reach out to Triton-Docker to create an Instance
+	if pod.ObjectMeta.Annotations["type"] == "docker" {
+		container, err := p.dclient.CreateContainer(docker.CreateContainerOptions{
+			Name: pod.Name,
+			Config: &docker.Config{
+				Image: pod.Spec.Containers[0].Image,
+				Cmd: []string{
+					"containerpilot",
+					"-config",
+					"/etc/containerpilot.json5",
+				},
+				Labels: map[string]string{
+					"triton.network.public": pod.ObjectMeta.Annotations["public_network"],
+				},
+			},
+			HostConfig: &docker.HostConfig{
+				NetworkMode:     pod.ObjectMeta.Annotations["private_network"],
+				PublishAllPorts: true,
+			},
+			Context: ctx,
+		})
+		q.Q(container, err)
+		return nil
+	}
+
+	// Reach out to Triton to create an Instance
 	c, err := p.tclient.Compute()
 	if err != nil {
 		return err
