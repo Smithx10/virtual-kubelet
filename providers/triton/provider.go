@@ -616,6 +616,8 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 				p.recorder.Eventf(pod, corev1.EventTypeWarning, "InvalidEnvironmentVariableNames", "Keys [%s] from the EnvFrom configMap %s/%s were skipped since they are considered invalid environment variable names.", strings.Join(invalidKeys, ", "), pod.Namespace, name)
 				//fmt.Sprintf("InvalidEnvironmentVariableNames", "Keys [%s] from the EnvFrom configMap %s/%s were skipped since they are considered invalid environment variable names.", strings.Join(invalidKeys, ", "), pod.Namespace, name)
 			}
+			environment, _ := json.Marshal(key_values)
+			env_vars = string(environment)
 		case envFrom.SecretRef != nil:
 			s := envFrom.SecretRef
 			name := s.Name
@@ -648,6 +650,8 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 				sort.Strings(invalidKeys)
 				fmt.Sprintf("InvalidEnvironmentVariableNames", "Keys [%s] from the EnvFrom secret %s/%s were skipped since they are considered invalid environment variable names.", strings.Join(invalidKeys, ", "), pod.Namespace, name)
 			}
+			environment, _ := json.Marshal(key_values)
+			env_vars = string(environment)
 		}
 	}
 
@@ -670,8 +674,16 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 		env_vars = "\"unset\""
 	}
 
-	// Build Metadata
+	// Build Triton-Docker Env
+	var dockerEnv []string
+	for k, v := range key_values {
+		dockerEnv = append(dockerEnv, fmt.Sprintf("%s=%s", k, v))
+	}
+
+	// Build Triton and Triton-Docker Metadata
 	metadata := make(map[string]string)
+	tags := make(map[string]string)
+
 	metadata["user-data"] = "{\"env_vars\": " + env_vars + "}"
 	metadata["k8s_pod"] = string(Pod)
 
@@ -679,11 +691,13 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	for k, v := range pod.ObjectMeta.Annotations {
 		if k != "fwenabled" && k != "fwgroup" && k != "networks" && k != "public_network" && k != "private_network" && k != "package" && k != "affinity" && k != "delprotect" {
 			metadata[k] = v
+			if pod.ObjectMeta.Annotations["type"] == "docker" {
+				tags[k] = v
+			}
 		}
 	}
 
 	// Build Tags
-	tags := make(map[string]string)
 	if pod.ObjectMeta.Labels != nil {
 		for k, v := range pod.ObjectMeta.Labels {
 			tags[k] = v
@@ -694,11 +708,19 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	tags["k8s_nodename"] = p.nodeName
 	tags["k8s_uid"] = string(pod.UID)
 
-	// Build Tags: firewall group
-	if pod.ObjectMeta.Annotations["fwgroup"] != "" {
-		tags["k8s_fwgroup"] = pod.ObjectMeta.Annotations["fwgroup"]
-		tags[fmt.Sprintf("k8s_%s", pod.ObjectMeta.Annotations["fwgroup"])] = "true"
+	if pod.ObjectMeta.Annotations["type"] == "docker" {
+		tags["k8s_pod"] = string(Pod)
+		tags["com.joyent.package"] = pod.ObjectMeta.Annotations["package"]
+		if pod.ObjectMeta.Annotations["public_network"] != "" {
+			tags["triton.network.public"] = pod.ObjectMeta.Annotations["public_network"]
+		}
+	} else {
+		// Build Tags: firewall group
+		if pod.ObjectMeta.Annotations["fwgroup"] != "" {
+			tags["k8s_fwgroup"] = pod.ObjectMeta.Annotations["fwgroup"]
+			tags[fmt.Sprintf("k8s_%s", pod.ObjectMeta.Annotations["fwgroup"])] = "true"
 
+		}
 	}
 
 	// Firewall Enabled
@@ -746,6 +768,8 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 			affinity = record
 		}
 	}
+	// Add Affinity Rule to DockerEnv,  Currently the user is responsibile for supplying the affinity: prefix
+	dockerEnv = append(dockerEnv, affinity...)
 
 	// Reach out to Triton-Docker to create an Instance
 	if pod.ObjectMeta.Annotations["type"] == "docker" {
@@ -758,9 +782,8 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 					"-config",
 					"/etc/containerpilot.json5",
 				},
-				Labels: map[string]string{
-					"triton.network.public": pod.ObjectMeta.Annotations["public_network"],
-				},
+				Labels: tags,
+				Env:    dockerEnv,
 			},
 			HostConfig: &docker.HostConfig{
 				NetworkMode:     pod.ObjectMeta.Annotations["private_network"],
