@@ -771,54 +771,70 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	// Add Affinity Rule to DockerEnv,  Currently the user is responsibile for supplying the affinity: prefix
 	dockerEnv = append(dockerEnv, affinity...)
 
-	// Reach out to Triton-Docker to create an Instance
-	if pod.ObjectMeta.Annotations["type"] == "docker" {
-		container, err := p.dclient.CreateContainer(docker.CreateContainerOptions{
-			Name: pod.Name,
-			Config: &docker.Config{
-				Image: pod.Spec.Containers[0].Image,
-				Cmd: []string{
-					"containerpilot",
-					"-config",
-					"/etc/containerpilot.json5",
-				},
-				Labels: tags,
-				Env:    dockerEnv,
-			},
-			HostConfig: &docker.HostConfig{
-				NetworkMode:     pod.ObjectMeta.Annotations["private_network"],
-				PublishAllPorts: true,
-			},
-			Context: ctx,
-		})
-		q.Q(container, err)
-		return nil
-	}
-
 	// Reach out to Triton to create an Instance
+	var instanceID string
 	c, err := p.tclient.Compute()
 	if err != nil {
 		return err
 	}
-	i, err := c.Instances().Create(ctx, &compute.CreateInstanceInput{
-		Image:           pod.Spec.Containers[0].Image,
-		Package:         pod.ObjectMeta.Annotations["package"],
-		Name:            pod.Name,
-		Tags:            tags,
-		Networks:        networks,
-		Metadata:        metadata,
-		Affinity:        affinity,
-		FirewallEnabled: fwenabled,
-	})
-	if err != nil {
-		delete(p.pods, tp.fn)
-		tp.createLock.Unlock()
-		return err
+	// Reach out to Triton-Docker to create an Instance
+	if pod.ObjectMeta.Annotations["type"] == "docker" {
+		i, err := p.dclient.CreateContainer(docker.CreateContainerOptions{
+			Name: pod.Name,
+			Config: &docker.Config{
+				Cmd:        pod.Spec.Containers[0].Args,
+				Entrypoint: pod.Spec.Containers[0].Command,
+				Env:        dockerEnv,
+				Image:      pod.Spec.Containers[0].Image,
+				Labels:     tags,
+				OpenStdin:  pod.Spec.Containers[0].Stdin,
+				StdinOnce:  pod.Spec.Containers[0].StdinOnce,
+				Tty:        pod.Spec.Containers[0].TTY,
+				WorkingDir: pod.Spec.Containers[0].WorkingDir,
+			},
+			HostConfig: &docker.HostConfig{
+				NetworkMode: pod.ObjectMeta.Annotations["private_network"],
+				// TODO: Restart policy and other thingies, Requires a Type Conversion
+				//RestartPolicy:   string(pod.Spec.RestartPolicy),
+				PublishAllPorts: true,
+			},
+			Context: ctx,
+		})
+		if err != nil {
+			delete(p.pods, tp.fn)
+			tp.createLock.Unlock()
+			return err
+		}
+		// Start The Container
+		p.dclient.StartContainer(i.ID, i.HostConfig)
+		instanceID = i.ID
+	} else {
+		i, err := c.Instances().Create(ctx, &compute.CreateInstanceInput{
+			Image:           pod.Spec.Containers[0].Image,
+			Package:         pod.ObjectMeta.Annotations["package"],
+			Name:            pod.Name,
+			Tags:            tags,
+			Networks:        networks,
+			Metadata:        metadata,
+			Affinity:        affinity,
+			FirewallEnabled: fwenabled,
+		})
+		if err != nil {
+			delete(p.pods, tp.fn)
+			tp.createLock.Unlock()
+			return err
+		}
+		instanceID = i.ID
 	}
 
 	// Block Until Triton Creates an Instance and Cache first instToPod on the TritonPod.Pod Struct
 	for {
-		running, err := c.Instances().Get(ctx, &compute.GetInstanceInput{ID: i.ID})
+		// OverRide Get INstance with Docker Instance ID
+		if pod.ObjectMeta.Annotations["type"] == "docker" {
+			instanceID = fmt.Sprintf("%s-%s-%s-%s-%s", instanceID[0:8], instanceID[8:12], instanceID[12:16], instanceID[16:20], instanceID[20:32])
+		}
+
+		running, err := c.Instances().Get(ctx, &compute.GetInstanceInput{ID: instanceID})
 		if err != nil {
 			return err
 		}
@@ -863,36 +879,36 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	}
 
 	if delprotect == true {
-		err := c.Instances().EnableDeletionProtection(ctx, &compute.EnableDeletionProtectionInput{InstanceID: i.ID})
+		err := c.Instances().EnableDeletionProtection(ctx, &compute.EnableDeletionProtectionInput{InstanceID: instanceID})
 		if err != nil {
 			// implement events
-			fmt.Println("Couldn't Apply Error Protection")
+			fmt.Println("Couldn't Apply Deletion Protection")
 		}
 	}
 
 	// Apply Firewall Rules for Ports Specified
-	for _, v := range pod.Spec.Containers[0].Ports {
-		if v.Name == "" {
-			v.Name = "unset"
-		}
-		if v.Protocol == "" {
-			v.Protocol = "TCP"
-		}
-		// Create Client and Do work.
-		n, err := p.tclient.Network()
-		if err != nil {
-			return err
-		}
-		rule, err := n.Firewall().CreateRule(ctx, &network.CreateRuleInput{
-			Rule:        fmt.Sprintf("FROM any TO vm %s ALLOW %s PORT %d", i.ID, strings.ToLower(string(v.Protocol)), v.ContainerPort),
-			Enabled:     true,
-			Description: fmt.Sprintf("Set by K8S for service: %s", string(v.Name)),
-		})
-		tp.fwrs = append(tp.fwrs, rule)
-	}
-
 	// If first Pod in the fwgroup, Create the fwgroup Firewall Rules
 	if pod.ObjectMeta.Annotations["fwgroup"] != "" {
+		for _, v := range pod.Spec.Containers[0].Ports {
+			if v.Name == "" {
+				v.Name = "unset"
+			}
+			if v.Protocol == "" {
+				v.Protocol = "TCP"
+			}
+			// Create Client and Do work.
+			n, err := p.tclient.Network()
+			if err != nil {
+				return err
+			}
+			rule, err := n.Firewall().CreateRule(ctx, &network.CreateRuleInput{
+				Rule:        fmt.Sprintf("FROM any TO vm %s ALLOW %s PORT %d", instanceID, strings.ToLower(string(v.Protocol)), v.ContainerPort),
+				Enabled:     true,
+				Description: fmt.Sprintf("Set by K8S for service: %s", string(v.Name)),
+			})
+			tp.fwrs = append(tp.fwrs, rule)
+		}
+
 		fwg := pod.ObjectMeta.Annotations["fwgroup"]
 
 		n, err := p.tclient.Network()
@@ -934,7 +950,7 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 
 	tp.createLock.Unlock()
 
-	fmt.Sprintf("Created: " + i.Name)
+	fmt.Sprintf("Created: " + instanceID)
 	return nil
 }
 
@@ -1046,6 +1062,9 @@ func (p *TritonProvider) GetPod(ctx context.Context, namespace, name string) (*c
 	if len(i) == 0 {
 		return nil, nil
 	}
+	if i[0].Docker == true {
+		return p.TagToPodSpec(fmt.Sprint(i[0].Tags["docker:label:k8s_pod"])), nil
+	}
 
 	return p.TagToPodSpec(fmt.Sprint(i[0].Metadata["k8s_pod"])), nil
 }
@@ -1053,7 +1072,6 @@ func (p *TritonProvider) GetPod(ctx context.Context, namespace, name string) (*c
 // GetContainerLogs retrieves the logs of a container by name from the provider.
 func (p *TritonProvider) GetContainerLogs(ctx context.Context, namespace, podName, containerName string, tail int) (string, error) {
 	log.Printf("Received GetContainerLogs request for %s/%s/%s.\n", namespace, podName, containerName)
-	q.Q(namespace, podName, containerName, tail)
 
 	client := &SSH{
 		Ip:   "10.1.10.112",
@@ -1268,9 +1286,29 @@ func (p *TritonProvider) OperatingSystem() string {
 
 func instanceToPod(i *compute.Instance) (*corev1.Pod, error) {
 	// Get CreatePod Spec from the Metadata
-	bytes := []byte(fmt.Sprint(i.Metadata["k8s_pod"]))
+
 	var tps *corev1.Pod
-	json.Unmarshal(bytes, &tps)
+	var uid string
+	var nodename string
+	var namespace string
+
+	// handle docker differnet tag names
+	if i.Docker == true {
+		bytes := []byte(fmt.Sprint(i.Tags["docker:label:k8s_pod"]))
+		json.Unmarshal(bytes, &tps)
+
+		uid = fmt.Sprint(i.Tags["docker:label:k8s_uid"])
+		nodename = fmt.Sprint(i.Tags["docker:label:k8s_nodename"])
+		namespace = fmt.Sprint(i.Tags["docker:label:k8s_namepsace"])
+
+	} else {
+		bytes := []byte(fmt.Sprint(i.Metadata["k8s_pod"]))
+		json.Unmarshal(bytes, &tps)
+
+		uid = fmt.Sprint(i.Tags["k8s_uid"])
+		nodename = fmt.Sprint(i.Tags["k8s_nodename"])
+		namespace = fmt.Sprint(i.Tags["k8s_namepsace"])
+	}
 
 	// Take Care of time
 	var podCreationTimestamp metav1.Time
@@ -1351,13 +1389,13 @@ func instanceToPod(i *compute.Instance) (*corev1.Pod, error) {
 		},
 		ObjectMeta: metav1.ObjectMeta{
 			Name:              i.Name,
-			Namespace:         fmt.Sprint(i.Tags["k8s_namespace"]),
-			UID:               types.UID(fmt.Sprint(i.Tags["k8s_uid"])),
+			Namespace:         namespace,
+			UID:               types.UID(uid),
 			CreationTimestamp: podCreationTimestamp,
 			Annotations:       tps.Annotations,
 		},
 		Spec: corev1.PodSpec{
-			NodeName:      fmt.Sprint(i.Tags["k8s_nodename"]),
+			NodeName:      nodename,
 			Volumes:       []corev1.Volume{},
 			Containers:    containers,
 			RestartPolicy: tps.Spec.RestartPolicy,
