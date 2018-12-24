@@ -683,13 +683,13 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	// Build Triton and Triton-Docker Metadata
 	metadata := make(map[string]string)
 	tags := make(map[string]string)
+	labels := make(map[string]string)
 
 	metadata["user-data"] = "{\"env_vars\": " + env_vars + "}"
-	metadata["k8s_pod"] = string(Pod)
 
 	// Iterate over Annotations Keys that  shouldn't be stored as Metadata on the Triton Instance
 	for k, v := range pod.ObjectMeta.Annotations {
-		if k != "fwenabled" && k != "fwgroup" && k != "networks" && k != "public_network" && k != "private_network" && k != "package" && k != "affinity" && k != "delprotect" {
+		if k != "fwenabled" && k != "fwgroup" && k != "type" && k != "networks" && k != "public_network" && k != "private_network" && k != "package" && k != "affinity" && k != "delprotect" {
 			metadata[k] = v
 			if pod.ObjectMeta.Annotations["type"] == "docker" {
 				tags[k] = v
@@ -707,20 +707,20 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	tags["k8s_namespace"] = pod.Namespace
 	tags["k8s_nodename"] = p.nodeName
 	tags["k8s_uid"] = string(pod.UID)
+	tags["k8s_pod"] = string(Pod)
 
 	if pod.ObjectMeta.Annotations["type"] == "docker" {
-		tags["k8s_pod"] = string(Pod)
-		tags["com.joyent.package"] = pod.ObjectMeta.Annotations["package"]
+		labels["com.joyent.package"] = pod.ObjectMeta.Annotations["package"]
 		if pod.ObjectMeta.Annotations["public_network"] != "" {
-			tags["triton.network.public"] = pod.ObjectMeta.Annotations["public_network"]
+			labels["triton.network.public"] = pod.ObjectMeta.Annotations["public_network"]
 		}
-	} else {
-		// Build Tags: firewall group
-		if pod.ObjectMeta.Annotations["fwgroup"] != "" {
-			tags["k8s_fwgroup"] = pod.ObjectMeta.Annotations["fwgroup"]
-			tags[fmt.Sprintf("k8s_%s", pod.ObjectMeta.Annotations["fwgroup"])] = "true"
+	}
+	// Build Tags: firewall group
+	if pod.ObjectMeta.Annotations["fwgroup"] != "" {
+		tags["k8s_fwgroup"] = pod.ObjectMeta.Annotations["fwgroup"]
+		tags["k8s_pod"] = string(Pod)
+		tags[fmt.Sprintf("k8s_%s", pod.ObjectMeta.Annotations["fwgroup"])] = "true"
 
-		}
 	}
 
 	// Firewall Enabled
@@ -786,7 +786,7 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 				Entrypoint: pod.Spec.Containers[0].Command,
 				Env:        dockerEnv,
 				Image:      pod.Spec.Containers[0].Image,
-				Labels:     tags,
+				Labels:     labels,
 				OpenStdin:  pod.Spec.Containers[0].Stdin,
 				StdinOnce:  pod.Spec.Containers[0].StdinOnce,
 				Tty:        pod.Spec.Containers[0].TTY,
@@ -805,9 +805,20 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 			tp.createLock.Unlock()
 			return err
 		}
+		// OverRide Get INstance with Docker Instance ID
+		instanceID = fmt.Sprintf("%s-%s-%s-%s-%s", i.ID[0:8], i.ID[8:12], i.ID[12:16], i.ID[16:20], i.ID[20:32])
+
+		// Apply Tags that match CloudAPI's.  This second call to the API is because Currently Docker API has no way to set a label without "docker:label"
+		err = c.Instances().AddTags(ctx, &compute.AddTagsInput{
+			ID:   instanceID,
+			Tags: tags,
+		})
+		if err != nil {
+			q.Q(err)
+		}
 		// Start The Container
 		p.dclient.StartContainer(i.ID, i.HostConfig)
-		instanceID = i.ID
+
 	} else {
 		i, err := c.Instances().Create(ctx, &compute.CreateInstanceInput{
 			Image:           pod.Spec.Containers[0].Image,
@@ -829,11 +840,6 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 
 	// Block Until Triton Creates an Instance and Cache first instToPod on the TritonPod.Pod Struct
 	for {
-		// OverRide Get INstance with Docker Instance ID
-		if pod.ObjectMeta.Annotations["type"] == "docker" {
-			instanceID = fmt.Sprintf("%s-%s-%s-%s-%s", instanceID[0:8], instanceID[8:12], instanceID[12:16], instanceID[16:20], instanceID[20:32])
-		}
-
 		running, err := c.Instances().Get(ctx, &compute.GetInstanceInput{ID: instanceID})
 		if err != nil {
 			return err
@@ -921,10 +927,14 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 			p.fwgs[fwg] = p.NewTritonFWGroup()
 
 			// Create a TCP Rule for the FWG
+			tcprule := fmt.Sprintf("FROM tag k8s_" + fwg + " TO tag k8s_" + fwg + " ALLOW tcp PORT all")
+			udprule := fmt.Sprintf("FROM tag k8s_" + fwg + " TO tag k8s_" + fwg + " ALLOW udp PORT all")
+			desc := fmt.Sprintf("Set by K8S for Pods in the FW Zone: k8s_", fwg)
+
 			rule, err := n.Firewall().CreateRule(ctx, &network.CreateRuleInput{
-				Rule:        fmt.Sprintf("FROM tag k8s_" + fwg + " TO tag k8s_" + fwg + " ALLOW tcp PORT all"),
+				Rule:        tcprule,
 				Enabled:     true,
-				Description: fmt.Sprintf("Set by K8S for Pods in the FW Zone: k8s_", fwg),
+				Description: desc,
 			})
 			if err != nil {
 				return err
@@ -933,9 +943,9 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 
 			// Create a UDP Rule for the FWG
 			rule, err = n.Firewall().CreateRule(ctx, &network.CreateRuleInput{
-				Rule:        fmt.Sprintf("FROM tag k8s_" + fwg + " TO tag k8s_" + fwg + " ALLOW udp PORT all"),
+				Rule:        udprule,
 				Enabled:     true,
-				Description: fmt.Sprintf("Set by K8S for Pods in the FW Zone: k8s_", fwg),
+				Description: desc,
 			})
 			if err != nil {
 				return err
@@ -1062,11 +1072,8 @@ func (p *TritonProvider) GetPod(ctx context.Context, namespace, name string) (*c
 	if len(i) == 0 {
 		return nil, nil
 	}
-	if i[0].Docker == true {
-		return p.TagToPodSpec(fmt.Sprint(i[0].Tags["docker:label:k8s_pod"])), nil
-	}
 
-	return p.TagToPodSpec(fmt.Sprint(i[0].Metadata["k8s_pod"])), nil
+	return p.TagToPodSpec(fmt.Sprint(i[0].Tags["k8s_pod"])), nil
 }
 
 // GetContainerLogs retrieves the logs of a container by name from the provider.
@@ -1120,6 +1127,8 @@ func (p *TritonProvider) GetPods(ctx context.Context) ([]*corev1.Pod, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// Get Instances
 	is, err := c.Instances().List(ctx, &compute.ListInstancesInput{
 		Tags: map[string]interface{}{
 			"k8s_nodename": p.nodeName,
@@ -1137,7 +1146,6 @@ func (p *TritonProvider) GetPods(ctx context.Context) ([]*corev1.Pod, error) {
 	// Create Pods Array
 	pods := make([]*corev1.Pod, 0, len(is))
 	for _, i := range is {
-
 		// Repopulate all the firewall groups
 		if i.Tags["k8s_fwgroup"] != nil {
 			fwg := fmt.Sprint(i.Tags["k8s_fwgroup"])
@@ -1286,29 +1294,23 @@ func (p *TritonProvider) OperatingSystem() string {
 
 func instanceToPod(i *compute.Instance) (*corev1.Pod, error) {
 	// Get CreatePod Spec from the Metadata
-
 	var tps *corev1.Pod
 	var uid string
 	var nodename string
 	var namespace string
 
-	// handle docker differnet tag names
 	if i.Docker == true {
-		bytes := []byte(fmt.Sprint(i.Tags["docker:label:k8s_pod"]))
+		bytes := []byte(fmt.Sprint(i.Tags["k8s_pod"]))
 		json.Unmarshal(bytes, &tps)
-
-		uid = fmt.Sprint(i.Tags["docker:label:k8s_uid"])
-		nodename = fmt.Sprint(i.Tags["docker:label:k8s_nodename"])
-		namespace = fmt.Sprint(i.Tags["docker:label:k8s_namepsace"])
-
 	} else {
 		bytes := []byte(fmt.Sprint(i.Metadata["k8s_pod"]))
 		json.Unmarshal(bytes, &tps)
-
-		uid = fmt.Sprint(i.Tags["k8s_uid"])
-		nodename = fmt.Sprint(i.Tags["k8s_nodename"])
-		namespace = fmt.Sprint(i.Tags["k8s_namepsace"])
 	}
+
+	// Set the Instance Tags to Values we for the ContainerSpec
+	uid = fmt.Sprint(i.Tags["k8s_uid"])
+	nodename = fmt.Sprint(i.Tags["k8s_nodename"])
+	namespace = fmt.Sprint(i.Tags["k8s_namespace"])
 
 	// Take Care of time
 	var podCreationTimestamp metav1.Time
