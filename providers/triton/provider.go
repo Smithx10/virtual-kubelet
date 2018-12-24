@@ -816,6 +816,7 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 		if err != nil {
 			q.Q(err)
 		}
+
 		// Start The Container
 		p.dclient.StartContainer(i.ID, i.HostConfig)
 
@@ -1174,7 +1175,9 @@ func (p *TritonProvider) GetPods(ctx context.Context) ([]*corev1.Pod, error) {
 			return nil, err
 		}
 		for _, r := range rules {
-			p.pods[tp.fn].fwrs = append(p.pods[tp.fn].fwrs, r)
+			if !strings.Contains(r.Rule, "sdc_docker") {
+				p.pods[tp.fn].fwrs = append(p.pods[tp.fn].fwrs, r)
+			}
 		}
 
 		// Run Loops
