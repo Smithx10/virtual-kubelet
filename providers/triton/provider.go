@@ -19,6 +19,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+
 	docker "github.com/fsouza/go-dockerclient"
 	triton "github.com/joyent/triton-go"
 	"github.com/joyent/triton-go/authentication"
@@ -40,6 +42,10 @@ import (
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/tools/remotecommand"
 )
+
+//const (
+////
+//)
 
 // Triton Pod Struct
 type TritonPod struct {
@@ -559,7 +565,7 @@ func (p *TritonProvider) RunTritonPodLoops(tp *TritonPod) {
 func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	log.Printf("Received CreatePod request for %+v.\n", pod)
 
-	p.recorder.Eventf(pod, corev1.EventTypeWarning, "InvalidEnvironmentVariableNames", "Keys [%s] from the EnvFrom configMap %s/%s were skipped since they are considered invalid environment variable names.", "foot", "bar", "baz")
+	//p.recorder.Eventf(pod, corev1.EventTypeWarning, "InvalidEnvironmentVariableNames", "Keys [%s] from the EnvFrom configMap %s/%s were skipped since they are considered invalid environment variable names.", "foot", "bar", "baz")
 
 	// Create a Triton Pod  We do this right away so if a delete comes in about this... its on the struct
 	tp, _ := p.NewTritonPod(ctx, pod)
@@ -703,6 +709,7 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 			tags[k] = v
 		}
 	}
+
 	// Build Tags: Add *corev1.Pod to Pod
 	tags["k8s_namespace"] = pod.Namespace
 	tags["k8s_nodename"] = p.nodeName
@@ -748,9 +755,20 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 			if err != nil {
 				log.Fatal(err)
 			}
-			networks = record
+			for _, v := range record {
+				if IsValidUUID(v) {
+					networks = append(networks, v)
+				} else {
+					id, err := p.NetworkNameToID(ctx, v)
+					if err != nil {
+						return err
+					}
+					networks = append(networks, id)
+				}
+			}
 		}
 	}
+	q.Q(networks)
 
 	// Build Affinity
 	var affinity []string
@@ -1302,13 +1320,8 @@ func instanceToPod(i *compute.Instance) (*corev1.Pod, error) {
 	var nodename string
 	var namespace string
 
-	if i.Docker == true {
-		bytes := []byte(fmt.Sprint(i.Tags["k8s_pod"]))
-		json.Unmarshal(bytes, &tps)
-	} else {
-		bytes := []byte(fmt.Sprint(i.Metadata["k8s_pod"]))
-		json.Unmarshal(bytes, &tps)
-	}
+	bytes := []byte(fmt.Sprint(i.Tags["k8s_pod"]))
+	json.Unmarshal(bytes, &tps)
 
 	// Set the Instance Tags to Values we for the ContainerSpec
 	uid = fmt.Sprint(i.Tags["k8s_uid"])
@@ -1499,11 +1512,43 @@ func instanceStateToContainerState(state string) corev1.ContainerState {
 	}
 }
 
+func (p *TritonProvider) NetworkNameToID(ctx context.Context, name string) (string, error) {
+
+	n, err := p.tclient.Network()
+	e := fmt.Errorf("%s", "Error: Couldn't convert Network Name to Network ID")
+
+	// Get Networks
+	networks, err := n.List(ctx, &network.ListInput{})
+	if err != nil {
+		//log event
+		return "", err
+	}
+
+	for _, v := range networks {
+		if v.Name == name {
+			return v.Id, nil
+		}
+	}
+
+	return "", e
+}
+
+func (p *TritonProvider) validateTritonPodInput(pod *corev1.Pod) {
+	// Validate Mandatory Input Paramanters
+
+	// Validate Conflicting Input Parameters
+}
+
 func (p *TritonProvider) TagToPodSpec(tag string) *corev1.Pod {
 	bytes := []byte(tag)
 	var tps *corev1.Pod
 	json.Unmarshal(bytes, &tps)
 	return tps
+}
+
+func IsValidUUID(u string) bool {
+	_, err := uuid.Parse(u)
+	return err == nil
 }
 
 const (
