@@ -44,7 +44,6 @@ import (
 )
 
 //const (
-////
 //)
 
 // Triton Pod Struct
@@ -768,7 +767,6 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 			}
 		}
 	}
-	q.Q(networks)
 
 	// Build Affinity
 	var affinity []string
@@ -869,8 +867,10 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 			tp.createLock.Unlock()
 			return errors.New("Provisioning failed")
 		}
+		q.Q(running.Tags)
 
-		if running.State == "running" {
+		if running.State == "running" && running.Tags["k8s_nodename"] != nil {
+			q.Q(running.Tags)
 			// Add the Target Address for the Probes
 			if tp.probes["liveness"] != nil {
 				tp.probes["liveness"].TargetIP = running.PrimaryIP
