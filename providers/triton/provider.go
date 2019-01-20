@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go.opencensus.io/trace"
 
 	docker "github.com/fsouza/go-dockerclient"
 	triton "github.com/joyent/triton-go"
@@ -564,6 +565,11 @@ func (p *TritonProvider) RunTritonPodLoops(tp *TritonPod) {
 func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	log.Printf("Received CreatePod request for %+v.\n", pod)
 
+	ctx, span := trace.StartSpan(ctx, "triton.CreatePod")
+	defer span.End()
+
+	q.Q("Arrived in CreatePod")
+
 	//p.recorder.Eventf(pod, corev1.EventTypeWarning, "InvalidEnvironmentVariableNames", "Keys [%s] from the EnvFrom configMap %s/%s were skipped since they are considered invalid environment variable names.", "foot", "bar", "baz")
 
 	// Create a Triton Pod  We do this right away so if a delete comes in about this... its on the struct
@@ -992,6 +998,8 @@ func (p *TritonProvider) UpdatePod(ctx context.Context, pod *corev1.Pod) error {
 // DeletePod takes a Kubernetes Pod and deletes it from the provider.
 func (p *TritonProvider) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 	log.Printf("Received DeletePod request for %s/%s.\n", pod.Namespace, pod.Name)
+	ctx, span := trace.StartSpan(ctx, "triton.DeletePod")
+	defer span.End()
 	fn := p.GetPodFullName(pod.Namespace, pod.Name)
 
 	// initial check to see if CreatePod added the TritonPod
@@ -1081,6 +1089,9 @@ func (p *TritonProvider) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 func (p *TritonProvider) GetPod(ctx context.Context, namespace, name string) (*corev1.Pod, error) {
 	log.Printf("Received GetPod request for %s/%s.\n", namespace, name)
 
+	ctx, span := trace.StartSpan(ctx, "triton.GetPod")
+	defer span.End()
+
 	c, _ := p.tclient.Compute()
 	i, err := c.Instances().List(ctx, &compute.ListInstancesInput{
 		Name: name,
@@ -1098,6 +1109,9 @@ func (p *TritonProvider) GetPod(ctx context.Context, namespace, name string) (*c
 // GetContainerLogs retrieves the logs of a container by name from the provider.
 func (p *TritonProvider) GetContainerLogs(ctx context.Context, namespace, podName, containerName string, tail int) (string, error) {
 	log.Printf("Received GetContainerLogs request for %s/%s/%s.\n", namespace, podName, containerName)
+
+	ctx, span := trace.StartSpan(ctx, "triton.GetContainerLogs")
+	defer span.End()
 
 	client := &SSH{
 		Ip:   "10.1.10.112",
@@ -1128,6 +1142,9 @@ func (p *TritonProvider) ExecInContainer(name string, uid types.UID, container s
 func (p *TritonProvider) GetPodStatus(ctx context.Context, namespace, name string) (*corev1.PodStatus, error) {
 	log.Printf("Received GetPodStatus request for %s/%s.\n", namespace, name)
 
+	ctx, span := trace.StartSpan(ctx, "triton.GetPodStatus")
+	defer span.End()
+
 	fn := p.GetPodFullName(namespace, name)
 	if p.pods[fn] == nil {
 		fmt.Sprintf("Pod Missing: %s, Returning Nil.  If the Pod Exists we will catch it on the next GetPodStatus", fn)
@@ -1140,6 +1157,9 @@ func (p *TritonProvider) GetPodStatus(ctx context.Context, namespace, name strin
 // GetPods retrieves a list of all pods running on the provider (can be cached).
 func (p *TritonProvider) GetPods(ctx context.Context) ([]*corev1.Pod, error) {
 	log.Println("Received GetPods request.")
+
+	ctx, span := trace.StartSpan(ctx, "triton.GetPods")
+	defer span.End()
 
 	// Get Instances created by k8s on triton to repopulate the triton pods struct
 	c, err := p.tclient.Compute()
