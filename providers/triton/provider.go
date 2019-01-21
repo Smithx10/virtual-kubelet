@@ -740,7 +740,6 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 			trace.StringAttribute("Env", strings.Join(dockerEnv, ",\n")),
 			trace.StringAttribute("Image", pod.Spec.Containers[0].Image),
 			trace.StringAttribute("Labels", fmt.Sprintf("%s\n", jsonLabels)),
-			trace.StringAttribute("Tags", fmt.Sprintf("%s\n", jsonTags)),
 			trace.StringAttribute("RestartPolicy", fmt.Sprintf("%s", pod.Spec.RestartPolicy)),
 		)
 
@@ -773,6 +772,14 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 		instanceID = fmt.Sprintf("%s-%s-%s-%s-%s", i.ID[0:8], i.ID[8:12], i.ID[12:16], i.ID[16:20], i.ID[20:32])
 
 		// Apply Tags that match CloudAPI's.  This second call to the API is because Currently Docker API has no way to set a label without "docker:label"
+		// OpenCensus tracing
+		ctx, span = trace.StartSpan(ctx, "triton.AddTags")
+		defer span.End()
+		span.AddAttributes(
+			trace.StringAttribute("Name", pod.Name),
+			trace.StringAttribute("Instance", instanceID),
+			trace.StringAttribute("Tags", fmt.Sprintf("%s\n", jsonTags)),
+		)
 		err = c.Instances().AddTags(ctx, &compute.AddTagsInput{
 			ID:   instanceID,
 			Tags: tags,
@@ -852,17 +859,24 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 
 	// Apply Deletion Protection if Specified
 	var delprotect bool
-	if pod.ObjectMeta.Annotations["delprotect"] == "true" {
+	switch pod.ObjectMeta.Annotations["delprotect"] {
+	case "true":
 		delprotect = true
-	}
-	if pod.ObjectMeta.Annotations["delprotect"] == "false" {
+	case "false":
 		delprotect = false
-	}
-	if pod.ObjectMeta.Annotations["delprotect"] == "" {
+	case "":
 		delprotect = false
 	}
 
 	if delprotect == true {
+		// OpenCensus Tracing
+		ctx, span := trace.StartSpan(ctx, "triton.ApplyDeletionProtection")
+		defer span.End()
+		span.AddAttributes(
+			trace.StringAttribute("Name", pod.Name),
+			trace.StringAttribute("Instance", instanceID),
+			trace.StringAttribute("DeletionProtection", fmt.Sprintf("%s", delprotect)),
+		)
 		err := c.Instances().EnableDeletionProtection(ctx, &compute.EnableDeletionProtectionInput{InstanceID: instanceID})
 		if err != nil {
 			// implement events
