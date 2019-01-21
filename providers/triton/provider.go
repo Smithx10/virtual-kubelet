@@ -703,6 +703,18 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	// Add Affinity Rule to DockerEnv,  Currently the user is responsibile for supplying the affinity: prefix
 	dockerEnv = append(dockerEnv, affinity...)
 
+	var restartPolicy docker.RestartPolicy
+
+	// Handle Restart Policy
+	switch pod.Spec.RestartPolicy {
+	case "Always":
+		restartPolicy = docker.AlwaysRestart()
+	case "OnFailure":
+		restartPolicy = docker.RestartOnFailure(100)
+	case "Never":
+		restartPolicy = docker.NeverRestart()
+	}
+
 	// Marshell Labels to a Json string for tracing
 	jsonLabels, _ := json.Marshal(labels)
 	// Marshall Tags to a Json string for tracing
@@ -714,6 +726,7 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	if err != nil {
 		return err
 	}
+
 	// Reach out to Triton-Docker to create an Instance
 	if pod.ObjectMeta.Annotations["type"] == "docker" {
 
@@ -728,6 +741,7 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 			trace.StringAttribute("Image", pod.Spec.Containers[0].Image),
 			trace.StringAttribute("Labels", fmt.Sprintf("%s\n", jsonLabels)),
 			trace.StringAttribute("Tags", fmt.Sprintf("%s\n", jsonTags)),
+			trace.StringAttribute("RestartPolicy", fmt.Sprintf("%s", pod.Spec.RestartPolicy)),
 		)
 
 		i, err := p.dclient.CreateContainer(docker.CreateContainerOptions{
@@ -744,9 +758,8 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 				WorkingDir: pod.Spec.Containers[0].WorkingDir,
 			},
 			HostConfig: &docker.HostConfig{
-				NetworkMode: pod.ObjectMeta.Annotations["private_network"],
-				// TODO: Restart policy and other thingies, Requires a Type Conversion
-				//RestartPolicy:   string(pod.Spec.RestartPolicy),
+				NetworkMode:     pod.ObjectMeta.Annotations["private_network"],
+				RestartPolicy:   restartPolicy,
 				PublishAllPorts: true,
 			},
 			Context: ctx,
