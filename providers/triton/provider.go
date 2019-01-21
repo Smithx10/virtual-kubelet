@@ -1,7 +1,6 @@
 package triton
 
 import (
-	"bufio"
 	"context"
 	"encoding/csv"
 	"encoding/json"
@@ -28,8 +27,6 @@ import (
 	"github.com/joyent/triton-go/network"
 	"github.com/virtual-kubelet/virtual-kubelet/manager"
 	"github.com/y0ssar1an/q"
-	"golang.org/x/crypto/ssh"
-	"golang.org/x/crypto/ssh/agent"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -564,6 +561,13 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 
 	ctx, span := trace.StartSpan(ctx, "triton.CreatePod")
 	defer span.End()
+	span.AddAttributes(
+		trace.StringAttribute("uid", string(pod.UID)),
+		trace.StringAttribute("namespace", pod.Namespace),
+		trace.StringAttribute("name", pod.Name),
+		trace.StringAttribute("phase", string(pod.Status.Phase)),
+		trace.StringAttribute("reason", pod.Status.Reason),
+	)
 
 	//p.recorder.Eventf(pod, corev1.EventTypeWarning, "InvalidEnvironmentVariableNames", "Keys [%s] from the EnvFrom configMap %s/%s were skipped since they are considered invalid environment variable names.", "foot", "bar", "baz")
 
@@ -698,6 +702,11 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	// Add Affinity Rule to DockerEnv,  Currently the user is responsibile for supplying the affinity: prefix
 	dockerEnv = append(dockerEnv, affinity...)
 
+	// Marshell Labels to a Json string for tracing
+	jsonLabels, _ := json.Marshal(labels)
+	// Marshall Tags to a Json string for tracing
+	jsonTags, _ := json.Marshal(tags)
+
 	// Reach out to Triton to create an Instance
 	var instanceID string
 	c, err := p.tclient.Compute()
@@ -706,6 +715,18 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	}
 	// Reach out to Triton-Docker to create an Instance
 	if pod.ObjectMeta.Annotations["type"] == "docker" {
+		ctx, span := trace.StartSpan(ctx, "triton.DockerAPICreate")
+		span.AddAttributes(
+			trace.StringAttribute("Name", pod.Name),
+			trace.StringAttribute("Cmd", strings.Join(pod.Spec.Containers[0].Args, ",")),
+			trace.StringAttribute("Entrypoint", strings.Join(pod.Spec.Containers[0].Command, ",")),
+			trace.StringAttribute("Env", strings.Join(dockerEnv, ",\n")),
+			trace.StringAttribute("Image", pod.Spec.Containers[0].Image),
+			trace.StringAttribute("Labels", fmt.Sprintf("%s\n", jsonLabels)),
+			trace.StringAttribute("Tags", fmt.Sprintf("%s\n", jsonTags)),
+		)
+
+		defer span.End()
 		i, err := p.dclient.CreateContainer(docker.CreateContainerOptions{
 			Name: pod.Name,
 			Config: &docker.Config{
@@ -748,6 +769,19 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 		p.dclient.StartContainer(i.ID, i.HostConfig)
 
 	} else {
+		// OpenCensus Tracing
+		ctx, span := trace.StartSpan(ctx, "triton.CloudAPICreate")
+		defer span.End()
+		span.AddAttributes(
+			trace.StringAttribute("Image", pod.Spec.Containers[0].Image),
+			trace.StringAttribute("Package", pod.ObjectMeta.Annotations["package"]),
+			trace.StringAttribute("Name", pod.Name),
+			trace.StringAttribute("Tags", fmt.Sprintf("%s\n", jsonTags)),
+			trace.StringAttribute("Networks", strings.Join(networks, ",\n")),
+			trace.StringAttribute("Affinity", strings.Join(affinity, ",\n")),
+			trace.StringAttribute("FirewallEnabled", fmt.Sprintf("%t", fwenabled)),
+		)
+
 		i, err := c.Instances().Create(ctx, &compute.CreateInstanceInput{
 			Image:           pod.Spec.Containers[0].Image,
 			Package:         pod.ObjectMeta.Annotations["package"],
@@ -835,6 +869,8 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 			if err != nil {
 				return err
 			}
+			ctx, span := trace.StartSpan(ctx, "triton.FirewallRuleApply")
+			defer span.End()
 			rule, err := n.Firewall().CreateRule(ctx, &network.CreateRuleInput{
 				Rule:        fmt.Sprintf("FROM any TO vm %s ALLOW %s PORT %d", instanceID, strings.ToLower(string(v.Protocol)), v.ContainerPort),
 				Enabled:     true,
@@ -859,6 +895,8 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 			udprule := fmt.Sprintf("FROM tag k8s_" + fwg + " TO tag k8s_" + fwg + " ALLOW udp PORT all")
 			desc := fmt.Sprintf("Set by K8S for Pods in the FW Zone: k8s_", fwg)
 
+			ctx, span := trace.StartSpan(ctx, "triton.FirewallGroupApply")
+			defer span.End()
 			rule, err := n.Firewall().CreateRule(ctx, &network.CreateRuleInput{
 				Rule:        tcprule,
 				Enabled:     true,
@@ -1013,19 +1051,7 @@ func (p *TritonProvider) GetPod(ctx context.Context, namespace, name string) (*c
 func (p *TritonProvider) GetContainerLogs(ctx context.Context, namespace, podName, containerName string, tail int) (string, error) {
 	log.Printf("Received GetContainerLogs request for %s/%s/%s.\n", namespace, podName, containerName)
 
-	ctx, span := trace.StartSpan(ctx, "triton.GetContainerLogs")
-	defer span.End()
-
-	client := &SSH{
-		Ip:   "10.1.10.112",
-		User: "ubuntu",
-		Port: 22,
-	}
-	client.Connect(4)
-	client.RunCmd("journalctl -u kubelet | tail -n 20")
-	client.Close()
-
-	return "Im Logging", nil
+	return "errNotImplemented", errNotImplemented
 }
 
 // GetPodFullName retrieves the full pod name as defined in the provider context.
@@ -1038,7 +1064,7 @@ func (p *TritonProvider) GetPodFullName(namespace string, pod string) string {
 func (p *TritonProvider) ExecInContainer(name string, uid types.UID, container string, cmd []string, in io.Reader, out, errstream io.WriteCloser, tty bool, resize <-chan remotecommand.TerminalSize, timeout time.Duration) error {
 	log.Printf("Received ExecInContainer request for %s.\n", container)
 
-	return nil
+	return errNotImplemented
 }
 
 // GetPodStatus retrieves the status of a pod by name from the provider.
@@ -1472,121 +1498,4 @@ func (p *TritonProvider) TagToPodSpec(tag string) *corev1.Pod {
 func IsValidUUID(u string) bool {
 	_, err := uuid.Parse(u)
 	return err == nil
-}
-
-const (
-	CERT_PASSWORD        = 1
-	CERT_PUBLIC_KEY_FILE = 2
-	DEFAULT_TIMEOUT      = 3 // second
-	SSH_AGENT            = 4
-)
-
-type SSH struct {
-	Ip      string
-	User    string
-	Cert    string //password or key file path
-	Port    int
-	session *ssh.Session
-	client  *ssh.Client
-}
-
-func SSHAgent() ssh.AuthMethod {
-	if sshAgent, err := net.Dial("unix", os.Getenv("SSH_AUTH_SOCK")); err == nil {
-		return ssh.PublicKeysCallback(agent.NewClient(sshAgent).Signers)
-	}
-	return nil
-}
-
-func (ssh_client *SSH) readPublicKeyFile(file string) ssh.AuthMethod {
-	buffer, err := ioutil.ReadFile(file)
-	if err != nil {
-		return nil
-	}
-
-	key, err := ssh.ParsePrivateKey(buffer)
-	if err != nil {
-		return nil
-	}
-	return ssh.PublicKeys(key)
-}
-
-func (ssh_client *SSH) Connect(mode int) {
-
-	var ssh_config *ssh.ClientConfig
-	var auth []ssh.AuthMethod
-	if mode == CERT_PASSWORD {
-		auth = []ssh.AuthMethod{ssh.Password(ssh_client.Cert)}
-	} else if mode == CERT_PUBLIC_KEY_FILE {
-		auth = []ssh.AuthMethod{ssh_client.readPublicKeyFile(ssh_client.Cert)}
-	} else if mode == SSH_AGENT {
-		auth = []ssh.AuthMethod{SSHAgent()}
-	} else {
-		log.Println("does not support mode: ", mode)
-		return
-	}
-
-	ssh_config = &ssh.ClientConfig{
-		User: ssh_client.User,
-		Auth: auth,
-		HostKeyCallback: func(hostname string, remote net.Addr, key ssh.PublicKey) error {
-			return nil
-		},
-		Timeout: time.Second * DEFAULT_TIMEOUT,
-	}
-
-	client, err := ssh.Dial("tcp", fmt.Sprintf("%s:%d", ssh_client.Ip, ssh_client.Port), ssh_config)
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-
-	session, err := client.NewSession()
-	if err != nil {
-		fmt.Println(err)
-		client.Close()
-		return
-	}
-
-	ssh_client.session = session
-	ssh_client.client = client
-}
-
-func SendCommand(in io.WriteCloser, cmd string) error {
-	if _, err := in.Write([]byte(cmd + "\n")); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func (ssh_client *SSH) RunCmd(cmd string) {
-	//out, err := ssh_client.session.CombinedOutput(cmd)
-	//if err != nil {
-	//fmt.Println(err)
-	//}
-	//fmt.Println(string(out))
-
-	stdin, err := ssh_client.session.StdinPipe()
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer stdin.Close()
-
-	stdout, err := ssh_client.session.StdoutPipe()
-
-	err = ssh_client.session.Start(cmd)
-	fmt.Println(err)
-
-	//SendCommand(stdin, cmd)
-
-	s := bufio.NewScanner(stdout)
-	for s.Scan() {
-		m := s.Text()
-		q.Q(m)
-	}
-}
-
-func (ssh_client *SSH) Close() {
-	ssh_client.session.Close()
-	ssh_client.client.Close()
 }
