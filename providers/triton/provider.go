@@ -559,6 +559,7 @@ func (p *TritonProvider) RunTritonPodLoops(tp *TritonPod) {
 func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	log.Printf("Received CreatePod request for %+v.\n", pod)
 
+	// OpenCensus Tracing
 	ctx, span := trace.StartSpan(ctx, "triton.CreatePod")
 	defer span.End()
 	span.AddAttributes(
@@ -715,18 +716,20 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	}
 	// Reach out to Triton-Docker to create an Instance
 	if pod.ObjectMeta.Annotations["type"] == "docker" {
+
+		// OpenCensus Tracing
 		ctx, span := trace.StartSpan(ctx, "triton.DockerAPICreate")
+		defer span.End()
 		span.AddAttributes(
 			trace.StringAttribute("Name", pod.Name),
-			trace.StringAttribute("Cmd", strings.Join(pod.Spec.Containers[0].Args, ",")),
-			trace.StringAttribute("Entrypoint", strings.Join(pod.Spec.Containers[0].Command, ",")),
+			trace.StringAttribute("Cmd", strings.Join(pod.Spec.Containers[0].Args, ",\n")),
+			trace.StringAttribute("Entrypoint", strings.Join(pod.Spec.Containers[0].Command, ",\n")),
 			trace.StringAttribute("Env", strings.Join(dockerEnv, ",\n")),
 			trace.StringAttribute("Image", pod.Spec.Containers[0].Image),
 			trace.StringAttribute("Labels", fmt.Sprintf("%s\n", jsonLabels)),
 			trace.StringAttribute("Tags", fmt.Sprintf("%s\n", jsonTags)),
 		)
 
-		defer span.End()
 		i, err := p.dclient.CreateContainer(docker.CreateContainerOptions{
 			Name: pod.Name,
 			Config: &docker.Config{
@@ -956,6 +959,8 @@ func (p *TritonProvider) UpdatePod(ctx context.Context, pod *corev1.Pod) error {
 // DeletePod takes a Kubernetes Pod and deletes it from the provider.
 func (p *TritonProvider) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 	log.Printf("Received DeletePod request for %s/%s.\n", pod.Namespace, pod.Name)
+
+	// OpenCensus Tracing
 	ctx, span := trace.StartSpan(ctx, "triton.DeletePod")
 	defer span.End()
 	fn := p.GetPodFullName(pod.Namespace, pod.Name)
@@ -1047,6 +1052,7 @@ func (p *TritonProvider) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 func (p *TritonProvider) GetPod(ctx context.Context, namespace, name string) (*corev1.Pod, error) {
 	log.Printf("Received GetPod request for %s/%s.\n", namespace, name)
 
+	// OpenCensus Tracing
 	ctx, span := trace.StartSpan(ctx, "triton.GetPod")
 	defer span.End()
 
@@ -1088,6 +1094,7 @@ func (p *TritonProvider) ExecInContainer(name string, uid types.UID, container s
 func (p *TritonProvider) GetPodStatus(ctx context.Context, namespace, name string) (*corev1.PodStatus, error) {
 	log.Printf("Received GetPodStatus request for %s/%s.\n", namespace, name)
 
+	// OpenCensus Tracing
 	ctx, span := trace.StartSpan(ctx, "triton.GetPodStatus")
 	defer span.End()
 
@@ -1104,6 +1111,7 @@ func (p *TritonProvider) GetPodStatus(ctx context.Context, namespace, name strin
 func (p *TritonProvider) GetPods(ctx context.Context) ([]*corev1.Pod, error) {
 	log.Println("Received GetPods request.")
 
+	// OpenCensus Tracing
 	ctx, span := trace.StartSpan(ctx, "triton.GetPods")
 	defer span.End()
 
