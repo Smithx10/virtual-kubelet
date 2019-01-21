@@ -869,10 +869,20 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 			if err != nil {
 				return err
 			}
+
+			// Set Rule String
+			fwRuleString := fmt.Sprintf("FROM any TO vm %s ALLOW %s PORT %d", instanceID, strings.ToLower(string(v.Protocol)), v.ContainerPort)
+
+			// OpenCensus Tracing
 			ctx, span := trace.StartSpan(ctx, "triton.FirewallRuleApply")
 			defer span.End()
+			span.AddAttributes(
+				trace.StringAttribute("Name", v.Name),
+				trace.StringAttribute("Rule", fwRuleString),
+			)
+
 			rule, err := n.Firewall().CreateRule(ctx, &network.CreateRuleInput{
-				Rule:        fmt.Sprintf("FROM any TO vm %s ALLOW %s PORT %d", instanceID, strings.ToLower(string(v.Protocol)), v.ContainerPort),
+				Rule:        fwRuleString,
 				Enabled:     true,
 				Description: fmt.Sprintf("Set by K8S for service: %s", string(v.Name)),
 			})
@@ -895,8 +905,15 @@ func (p *TritonProvider) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 			udprule := fmt.Sprintf("FROM tag k8s_" + fwg + " TO tag k8s_" + fwg + " ALLOW udp PORT all")
 			desc := fmt.Sprintf("Set by K8S for Pods in the FW Zone: k8s_", fwg)
 
+			// OpenCensus Tracing
 			ctx, span := trace.StartSpan(ctx, "triton.FirewallGroupApply")
 			defer span.End()
+			span.AddAttributes(
+				trace.StringAttribute("FirewallGroup", fmt.Sprintf("k8s_%s", fwg)),
+				trace.StringAttribute("TCPRule", fmt.Sprintf("%s", tcprule)),
+				trace.StringAttribute("UDPRule", fmt.Sprintf("%s", udprule)),
+			)
+
 			rule, err := n.Firewall().CreateRule(ctx, &network.CreateRuleInput{
 				Rule:        tcprule,
 				Enabled:     true,
